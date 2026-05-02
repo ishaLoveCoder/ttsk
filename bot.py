@@ -15,7 +15,7 @@ POST_CHAT_ID = int(os.getenv("POST_CHAT_ID"))
 TAG_USER_ID = int(os.getenv("TAG_USER_ID"))
 TAG_USERNAME = os.getenv("TAG_USERNAME", "@username")
 SITE_URL = os.getenv("SITE_URL", "https://skymovieshd.fast/")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "300"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))
 DB_FILE = "seen_posts.json"
 # ==========================================
 
@@ -153,7 +153,7 @@ def extract_gdflix_link(movie_url):
 # ---------- TELEGRAM ----------
 def send_to_telegram(data):
     message = (
-        f"/l {data['link']} -n {data['title']}\n"
+        f"/l2 {data['link']} -n {data['title']}\n"
         f"Tag: {TAG_USERNAME}\n"
         f"{TAG_USER_ID}"
     )
