@@ -154,8 +154,7 @@ def extract_gdflix_link(movie_url):
 def send_to_telegram(data):
     message = (
         f"/l2 {data['link']} -n {data['title']}\n"
-        f"Tag: {TAG_USERNAME}\n"
-        f"{TAG_USER_ID}"
+        f"Tag: {TAG_USERNAME} {TAG_USER_ID}"
     )
 
     bot.send_message(POST_CHAT_ID, message)
