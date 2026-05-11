@@ -79,11 +79,12 @@ def get_latest_posts():
     return posts
 
 
-# ---------- STEP 2 ----------
-def extract_gdflix_link(movie_url):
+# ---------- STEP 2 (GOFILE VERSION) ----------
+def extract_gofile_link(movie_url):
     r = requests.get(movie_url, headers=HEADERS, timeout=20)
     html = r.text
 
+    # ---- TITLE EXTRACT ----
     title_match = re.search(
         r"<div class='Robiul'>\s*Download\s*(.*?)</div>",
         html,
@@ -105,6 +106,7 @@ def extract_gdflix_link(movie_url):
 
         raw_title = title_match.group(1).strip() if title_match else "Unknown Movie"
 
+    # ---- GOOGLE DRIVE / DOWNLOAD BUTTON ----
     gdrive_match = re.search(
         r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>',
         html,
@@ -116,6 +118,7 @@ def extract_gdflix_link(movie_url):
 
     protected_url = gdrive_match.group(1).strip()
 
+    # ---- OPEN PROTECTED PAGE ----
     r2 = requests.get(
         protected_url,
         headers={
@@ -127,19 +130,31 @@ def extract_gdflix_link(movie_url):
 
     protected_html = r2.text
 
-    gdflix_patterns = [
-        r'https?://gdflix\.[^\s"\'<>]+',
-        r'https?://gdlink\.[^\s"\'<>]+'
+    # ---- GOFILE PATTERNS ----
+    gofile_patterns = [
+        r'https?://gofile\.io/d/[A-Za-z0-9]+',
+        r'https?://www\.gofile\.io/d/[A-Za-z0-9]+'
     ]
 
     final_link = None
 
-    for pattern in gdflix_patterns:
+    for pattern in gofile_patterns:
         matches = re.findall(pattern, protected_html, re.I)
 
         if matches:
             final_link = matches[0].strip()
             break
+
+    # ---- FALLBACK (sometimes encoded/slashed links) ----
+    if not final_link:
+        generic_match = re.search(
+            r'https?://(?:www\.)?gofile\.io/d/[A-Za-z0-9]+',
+            protected_html,
+            re.I
+        )
+
+        if generic_match:
+            final_link = generic_match.group(0).strip()
 
     if not final_link:
         return None
@@ -147,7 +162,7 @@ def extract_gdflix_link(movie_url):
     return {
         "title": clean_movie_title(raw_title),
         "link": final_link
-    }
+            }
 
 
 # ---------- TELEGRAM ----------
