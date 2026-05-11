@@ -79,8 +79,8 @@ def get_latest_posts():
     return posts
 
 
-# ---------- STEP 2 (GOFILE VERSION) ----------
-def extract_gofile_link(movie_url):
+# ---------- STEP 2 (HUBCLOUD VERSION) ----------
+def extract_hubcloud_link(movie_url):
     r = requests.get(movie_url, headers=HEADERS, timeout=20)
     html = r.text
 
@@ -106,12 +106,20 @@ def extract_gofile_link(movie_url):
 
         raw_title = title_match.group(1).strip() if title_match else "Unknown Movie"
 
-    # ---- GOOGLE DRIVE / DOWNLOAD BUTTON ----
+    # ---- FIND DOWNLOAD BUTTON ----
     gdrive_match = re.search(
         r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>',
         html,
         re.I
     )
+
+    # Fallback for other button texts
+    if not gdrive_match:
+        gdrive_match = re.search(
+            r'<a href=[\'"]([^\'"]+)[\'"][^>]*>(?:Download Now|V-Cloud|HubCloud|Direct Links?)</a>',
+            html,
+            re.I
+        )
 
     if not gdrive_match:
         return None
@@ -125,30 +133,37 @@ def extract_gofile_link(movie_url):
             "User-Agent": HEADERS["User-Agent"],
             "Referer": movie_url
         },
-        timeout=20
+        timeout=20,
+        allow_redirects=True
     )
 
     protected_html = r2.text
 
-    # ---- GOFILE PATTERNS ----
-    gofile_patterns = [
-        r'https?://gofile\.io/d/[A-Za-z0-9]+',
-        r'https?://www\.gofile\.io/d/[A-Za-z0-9]+'
+    # ---- HUBCLOUD PATTERNS ----
+    hubcloud_patterns = [
+        r'https?://hubcloud\.[^\s"\']+/drive/[A-Za-z0-9]+',
+        r'https?://hubcloud\.[^\s"\']+/drive/',
+        r'https?://(?:www\.)?hubcloud\.[^\s"\']+/drive/[A-Za-z0-9]+'
     ]
 
     final_link = None
 
-    for pattern in gofile_patterns:
+    for pattern in hubcloud_patterns:
         matches = re.findall(pattern, protected_html, re.I)
 
         if matches:
-            final_link = matches[0].strip()
+            # Prefer full tokenized link
+            final_link = max(matches, key=len).strip()
             break
 
-    # ---- FALLBACK (sometimes encoded/slashed links) ----
+    # ---- CHECK REDIRECT URL ITSELF ----
+    if not final_link and "hubcloud" in r2.url.lower():
+        final_link = r2.url.strip()
+
+    # ---- GENERIC FALLBACK ----
     if not final_link:
         generic_match = re.search(
-            r'https?://(?:www\.)?gofile\.io/d/[A-Za-z0-9]+',
+            r'https?://(?:www\.)?hubcloud\.[^\s"\']+/drive(?:/[A-Za-z0-9]+)?',
             protected_html,
             re.I
         )
@@ -162,7 +177,7 @@ def extract_gofile_link(movie_url):
     return {
         "title": clean_movie_title(raw_title),
         "link": final_link
-            }
+    }
 
 
 # ---------- TELEGRAM ----------
@@ -190,7 +205,7 @@ def main():
 
                 print("New Post Found:", post["title"])
 
-                data = extract_gofile_link(post["url"])
+                data = extract_hubcloud_link(post["url"])
 
                 if data:
                     send_to_telegram(data)
