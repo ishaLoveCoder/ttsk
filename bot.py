@@ -190,7 +190,7 @@ def main():
 
                 print("New Post Found:", post["title"])
 
-                data = extract_gdflix_link(post["url"])
+                data = extract_gofile_link(post["url"])
 
                 if data:
                     send_to_telegram(data)
