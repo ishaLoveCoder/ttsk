@@ -95,31 +95,75 @@ def admin_only(func):
         func(message)
     return wrapper
 
-# ================= TITLE CLEANER =================
-def clean_title(title):
-    # GDFlix | prefix hata do
-    title = re.sub(r'^GDFlix\s*\|\s*', '', title, flags=re.I).strip()
+# ================= TITLE PARSER =================
+def parse_title(raw):
+    """Raw title se saare parts nikalo as dict"""
+    raw = re.sub(r'^GDFlix\s*\|\s*', '', raw, flags=re.I).strip()
+    raw = re.sub(r'\s*\[www\.[^\]]+\]\s*', ' ', raw, flags=re.I).strip()
+    raw = re.sub(r'^Download\s+', '', raw, flags=re.I).strip()
+    raw = re.sub(r'\s*\[[^\]]*(?:MB|GB)[^\]]*\]', '', raw, flags=re.I).strip()
+    raw = re.sub(r'\.(mkv|mp4|avi)$', '', raw, flags=re.I).strip()
+    raw = re.sub(r'\s+-\s+-\s+', ' ', raw).strip()
+    raw = re.sub(r'\s+', ' ', raw).strip()
 
-    # [www.anything.com] hata do
-    title = re.sub(r'\s*\[www\.[^\]]+\]\s*', ' ', title, flags=re.I).strip()
+    p = {}
 
-    # Download prefix hata do
-    title = re.sub(r'^Download\s+', '', title, flags=re.I).strip()
+    y = re.search(r'(19|20)\d{2}', raw)
+    p['year'] = y.group() if y else ''
 
-    # Size brackets [500MB] etc hata do
-    title = re.sub(r'\s*\[[^\]]*(?:MB|GB)[^\]]*\]', '', title, flags=re.I).strip()
+    q = re.search(r'(4K|2160p|1080p|720p|480p|360p)', raw, re.I)
+    p['quality'] = q.group().lower() if q else ''
 
-    # Extension hata do
-    title = re.sub(r'\.(mkv|mp4|avi)$', '', title, flags=re.I).strip()
+    src = re.search(r'(WEB-DL|WEBRip|BluRay|BDRip|HDTC|HDRip|DVDRIP|AMZN|NF|ZEE5|HOTSTAR|JIO)', raw, re.I)
+    p['source'] = src.group().upper() if src else ''
 
-    # Multiple spaces
-    title = re.sub(r'\s+', ' ', title).strip()
+    codec = re.search(r'(x264|x265|HEVC|AVC|H\.264|H\.265|AV1)', raw, re.I)
+    p['codec'] = codec.group().lower() if codec else ''
 
-    # Esub add karo agar nahi hai
-    if "esub" not in title.lower():
-        title += " Esub"
+    lang = re.search(r'(Hindi|English|Tamil|Telugu|Malayalam|Kannada|Bengali|Multi)', raw, re.I)
+    p['language'] = lang.group().capitalize() if lang else ''
 
-    return title + ".mkv"
+    season = re.search(r'S(?:eason\s*)?(\d{1,2})', raw, re.I)
+    p['season'] = f"Season {int(season.group(1))}" if season else ''
+
+    ep = re.search(r'EP?\s*(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?', raw, re.I)
+    if ep:
+        p['episode'] = f"EP{ep.group(1).zfill(2)}-{ep.group(2).zfill(2)}" if ep.group(2) else f"EP{ep.group(1).zfill(2)}"
+    else:
+        p['episode'] = ''
+
+    p['complete'] = 'Complete' if re.search(r'complete', raw, re.I) else ''
+    p['esub'] = 'Esub'
+
+    if y:
+        title_part = raw[:y.start()].strip().rstrip('.-– ')
+    elif q:
+        title_part = raw[:q.start()].strip().rstrip('.-– ')
+    else:
+        title_part = raw
+    p['title'] = title_part.strip()
+
+    return p
+
+
+DEFAULT_CAPTION = "{title} ({year}) {quality} {language} {source} {codec} {season} {episode} {complete} {esub}.mkv"
+
+def apply_caption_format(parts, fmt=None):
+    if not fmt:
+        cfg = load_config()
+        fmt = cfg.get("caption_format", DEFAULT_CAPTION)
+    result = fmt
+    for key, val in parts.items():
+        result = result.replace('{' + key + '}', val)
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+    result = re.sub(r'\s+\.mkv$', '.mkv', result)
+    return result
+
+
+def clean_title(raw):
+    parts = parse_title(raw)
+    return apply_caption_format(parts)
+
 
 # ================= SKYMOVIES =================
 def get_sky_posts():
@@ -261,7 +305,12 @@ def cmd_help(message):
         "/status — last/next check time\n"
         "/stats — today's post count\n"
         "/latestsky — preview sky posts\n"
-        "/latesthdm — preview hdm posts"
+        "/latesthdm — preview hdm posts\n\n"
+        "<b>Caption:</b>\n"
+        "/caption {placeholders} — format set karo\n"
+        "/showcaption — current format dekho\n"
+        "/resetcaption — default pe reset\n"
+        "/testcaption <title> — live test"
     )
     bot.reply_to(message, text)
 
@@ -392,6 +441,76 @@ def cmd_settagid(message):
     cfg["tag_id"] = int(parts[1])
     save_config(cfg)
     bot.reply_to(message, f"✅ Tag ID set: <b>{parts[1]}</b>")
+
+
+@bot.message_handler(commands=["caption"])
+def cmd_caption(message):
+    if not is_admin(message): return
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, (
+            "📝 <b>Caption Format Set Karo</b>\n\n"
+            "Usage: <code>/caption {title} ({year}) {quality} {language} {source} {codec} {season} {episode} {complete} {esub}.mkv</code>\n\n"
+            "<b>Available placeholders:</b>\n"
+            "• <code>{title}</code> — Movie/Show naam\n"
+            "• <code>{year}</code> — 2026\n"
+            "• <code>{quality}</code> — 1080p, 720p\n"
+            "• <code>{language}</code> — Hindi, English\n"
+            "• <code>{source}</code> — WEB-DL, BluRay, HDTC\n"
+            "• <code>{codec}</code> — x264, x265, HEVC\n"
+            "• <code>{season}</code> — Season 1\n"
+            "• <code>{episode}</code> — EP01-02\n"
+            "• <code>{complete}</code> — Complete (agar ho)\n"
+            "• <code>{esub}</code> — Esub\n\n"
+            "<b>Example:</b>\n"
+            "<code>/caption {title} ({year}) {quality} {esub}.mkv</code>\n"
+            "→ <i>Pati Patni Aur Woh Do (2026) 1080p Esub.mkv</i>"
+        ))
+        return
+    fmt = parts[1].strip()
+    cfg = load_config()
+    cfg["caption_format"] = fmt
+    save_config(cfg)
+
+    # Preview dikhao
+    sample = {
+        "title": "Movie Name", "year": "2026", "quality": "1080p",
+        "language": "Hindi", "source": "WEB-DL", "codec": "x265",
+        "season": "Season 1", "episode": "EP01-02", "complete": "Complete", "esub": "Esub"
+    }
+    preview = apply_caption_format(sample, fmt)
+    bot.reply_to(message, f"✅ Caption format saved!\n\n<b>Preview:</b>\n<code>{preview}</code>")
+
+
+@bot.message_handler(commands=["showcaption"])
+def cmd_showcaption(message):
+    if not is_admin(message): return
+    cfg = load_config()
+    fmt = cfg.get("caption_format", DEFAULT_CAPTION)
+    bot.reply_to(message, f"📋 <b>Current Caption Format:</b>\n<code>{fmt}</code>")
+
+
+@bot.message_handler(commands=["resetcaption"])
+def cmd_resetcaption(message):
+    if not is_admin(message): return
+    cfg = load_config()
+    cfg["caption_format"] = DEFAULT_CAPTION
+    save_config(cfg)
+    bot.reply_to(message, f"🔄 Caption format reset to default:\n<code>{DEFAULT_CAPTION}</code>")
+
+
+@bot.message_handler(commands=["testcaption"])
+def cmd_testcaption(message):
+    if not is_admin(message): return
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /testcaption <raw title>\nExample: /testcaption Pati Patni Aur Woh Do (2026) Hindi 1080p WEB-DL x264")
+        return
+    raw = parts[1].strip()
+    p = parse_title(raw)
+    result = apply_caption_format(p)
+    detail = "\n".join([f"• <code>{k}</code>: {v}" for k,v in p.items() if v])
+    bot.reply_to(message, f"🎬 <b>Parsed:</b>\n{detail}\n\n✅ <b>Output:</b>\n<code>{result}</code>")
 
 @bot.message_handler(commands=["settings"])
 def cmd_settings(message):
