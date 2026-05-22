@@ -218,7 +218,7 @@ def send_to_telegram(data, source="sky"):
     # Tag line — brackets ke bina
     tag_line = f"Tag: {cfg['tag_username']} {cfg['tag_id']}"
 
-    message = f"/l2 {data['link']} -n {data['title']}\n\n{tag_line}"
+    message = f"/l2 {data['link']} -n {data['title']}\n{tag_line}"
 
     targets = channels if channels else [int(os.getenv("POST_CHAT_ID", "0"))]
 
