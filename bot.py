@@ -6,6 +6,8 @@ import time
 import os
 import requests
 import telebot
+import feedparser
+
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
@@ -14,7 +16,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 POST_CHAT_ID = int(os.getenv("POST_CHAT_ID"))
 TAG_USER_ID = int(os.getenv("TAG_USER_ID"))
 TAG_USERNAME = os.getenv("TAG_USERNAME", "@username")
+
 SITE_URL = os.getenv("SITE_URL", "https://skymovieshd.fast/")
+HDMOVIE_RSS = os.getenv("HDMOVIE_RSS", "https://hdmovie2.com.se/movies/feed/")
+
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))
 DB_FILE = "seen_posts.json"
 # ==========================================
@@ -51,10 +56,15 @@ def clean_movie_title(title):
 
     title = re.sub(r'(\.mkv|\.mp4|\.avi)$', '', title, flags=re.I)
 
+    if "esub" not in title.lower():
+        title += " Esub"
+
     return title + ".mkv"
 
 
-# ---------- STEP 1 ----------
+# =========================================================
+# SKYMOVIES POSTS
+# =========================================================
 def get_latest_posts():
     r = requests.get(SITE_URL, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "lxml")
@@ -73,18 +83,40 @@ def get_latest_posts():
         if full_url not in [x["url"] for x in posts]:
             posts.append({
                 "title": title,
-                "url": full_url
+                "url": full_url,
+                "source": "sky"
             })
 
     return posts
 
 
-# ---------- STEP 2 (HUBCLOUD VERSION) ----------
-def extract_hubcloud_link(movie_url):
+# =========================================================
+# HDMOVIE2 RSS POSTS
+# =========================================================
+def get_hdmovie2_posts():
+
+    feed = feedparser.parse(HDMOVIE_RSS)
+
+    posts = []
+
+    for item in feed.entries:
+
+        posts.append({
+            "title": item.title,
+            "url": item.link,
+            "source": "hdmovie2"
+        })
+
+    return posts
+
+
+# =========================================================
+# SKYMOVIES GOFILE EXTRACTOR
+# =========================================================
+def extract_gofile_link(movie_url):
     r = requests.get(movie_url, headers=HEADERS, timeout=20)
     html = r.text
 
-    # ---- TITLE EXTRACT ----
     title_match = re.search(
         r"<div class='Robiul'>\s*Download\s*(.*?)</div>",
         html,
@@ -106,27 +138,17 @@ def extract_hubcloud_link(movie_url):
 
         raw_title = title_match.group(1).strip() if title_match else "Unknown Movie"
 
-    # ---- FIND DOWNLOAD BUTTON ----
     gdrive_match = re.search(
         r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>',
         html,
         re.I
     )
 
-    # Fallback for other button texts
-    if not gdrive_match:
-        gdrive_match = re.search(
-            r'<a href=[\'"]([^\'"]+)[\'"][^>]*>(?:Download Now|V-Cloud|HubCloud|Direct Links?)</a>',
-            html,
-            re.I
-        )
-
     if not gdrive_match:
         return None
 
     protected_url = gdrive_match.group(1).strip()
 
-    # ---- OPEN PROTECTED PAGE ----
     r2 = requests.get(
         protected_url,
         headers={
@@ -139,61 +161,8 @@ def extract_hubcloud_link(movie_url):
 
     protected_html = r2.text
 
-    # ---------- STEP 2 (GOFILE VERSION) ----------
-def extract_gofile_link(movie_url):
-    r = requests.get(movie_url, headers=HEADERS, timeout=20)
-    html = r.text
-
-    # ---- TITLE EXTRACT ----
-    title_match = re.search(
-        r"<div class='Robiul'>\s*Download\s*(.*?)</div>",
-        html,
-        re.S | re.I
-    )
-
-    if title_match:
-        raw_title = BeautifulSoup(
-            title_match.group(1),
-            "lxml"
-        ).get_text(" ", strip=True)
-
-    else:
-        title_match = re.search(
-            r"<title>\s*(.*?)\s*Full Movie Download",
-            html,
-            re.I
-        )
-
-        raw_title = title_match.group(1).strip() if title_match else "Unknown Movie"
-
-    # ---- GOOGLE DRIVE / DOWNLOAD BUTTON ----
-    gdrive_match = re.search(
-        r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>',
-        html,
-        re.I
-    )
-
-    if not gdrive_match:
-        return None
-
-    protected_url = gdrive_match.group(1).strip()
-
-    # ---- OPEN PROTECTED PAGE ----
-    r2 = requests.get(
-        protected_url,
-        headers={
-            "User-Agent": HEADERS["User-Agent"],
-            "Referer": movie_url
-        },
-        timeout=20
-    )
-
-    protected_html = r2.text
-
-    # ---- GOFILE PATTERNS ----
     gofile_patterns = [
-        r'https?://gofile\.io/d/[A-Za-z0-9]+',
-        r'https?://www\.gofile\.io/d/[A-Za-z0-9]+'
+        r'https?://gofile\.io/d/[A-Za-z0-9]+'
     ]
 
     final_link = None
@@ -205,17 +174,6 @@ def extract_gofile_link(movie_url):
             final_link = matches[0].strip()
             break
 
-    # ---- FALLBACK (sometimes encoded/slashed links) ----
-    if not final_link:
-        generic_match = re.search(
-            r'https?://(?:www\.)?gofile\.io/d/[A-Za-z0-9]+',
-            protected_html,
-            re.I
-        )
-
-        if generic_match:
-            final_link = generic_match.group(0).strip()
-
     if not final_link:
         return None
 
@@ -225,43 +183,203 @@ def extract_gofile_link(movie_url):
     }
 
 
-# ---------- TELEGRAM ----------
+# =========================================================
+# HDMOVIE2 EXTRACTOR
+# =========================================================
+def get_hdm_links(movie_url):
+
+    try:
+
+        r = requests.get(
+            movie_url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        links = []
+
+        for a in soup.find_all("a", href=True):
+
+            href = a["href"]
+
+            if "hdm.im" in href:
+
+                text = a.get_text(" ", strip=True)
+
+                links.append({
+                    "label": text,
+                    "url": href
+                })
+
+        return links
+
+    except Exception as e:
+        print("HDM ERROR:", e)
+        return []
+
+
+# =========================================================
+# HDMOVIE2 FINAL GDFLIX LINK
+# =========================================================
+def extract_gdflix_data(hdm_url):
+
+    try:
+
+        r = requests.get(
+            hdm_url,
+            headers=HEADERS,
+            allow_redirects=True,
+            timeout=20
+        )
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        final = []
+
+        for a in soup.find_all("a", href=True):
+
+            href = a["href"]
+
+            if "gdflix" not in href.lower():
+                continue
+
+            try:
+
+                r2 = requests.get(
+                    href,
+                    headers=HEADERS,
+                    allow_redirects=True,
+                    timeout=20
+                )
+
+                final_url = r2.url
+
+                title_match = re.search(
+                    r"<title>(.*?)</title>",
+                    r2.text,
+                    re.I
+                )
+
+                if not title_match:
+                    continue
+
+                raw_title = title_match.group(1)
+
+                clean = clean_movie_title(raw_title)
+
+                final.append({
+                    "title": clean,
+                    "link": final_url
+                })
+
+            except Exception as e:
+                print("GD ERROR:", e)
+
+        return final
+
+    except Exception as e:
+        print("FINAL ERROR:", e)
+        return []
+
+
+# =========================================================
+# TELEGRAM SEND
+# =========================================================
 def send_to_telegram(data):
+
     message = (
-        f"/l2 {data['link']} -n {data['title']}\n"
-        f"Tag: {TAG_USERNAME} {TAG_USER_ID}"
+        f"/l2 {data['link']} -n {data['title']}\n\n"
+        f"Tag: {TAG_USERNAME} [{TAG_USER_ID}]"
     )
 
     bot.send_message(POST_CHAT_ID, message)
 
 
-# ---------- MAIN ----------
+# =========================================================
+# MAIN LOOP
+# =========================================================
 def main():
     print("Bot Started...")
+
     seen = load_seen()
 
     while True:
-        try:
-            posts = get_latest_posts()
 
-            for post in reversed(posts):
+        try:
+
+            # ---------------- SKYMOVIES ----------------
+            sky_posts = get_latest_posts()
+
+            for post in reversed(sky_posts):
+
                 if post["url"] in seen:
                     continue
 
-                print("New Post Found:", post["title"])
+                print("[SKY] New:", post["title"])
 
                 data = extract_gofile_link(post["url"])
 
                 if data:
                     send_to_telegram(data)
-                    print("Sent:", data["title"])
+                    print("[SKY] Sent:", data["title"])
 
                 seen.add(post["url"])
                 save_seen(seen)
 
                 time.sleep(3)
 
-        except Exception as e:
-            print("Error:", e)
 
+            # ---------------- HDMOVIE2 ----------------
+            hd_posts = get_hdmovie2_posts()
+
+            for post in reversed(hd_posts):
+
+                if post["url"] in seen:
+                    continue
+
+                print("[HDMOVIE2] New:", post["title"])
+
+                hdm_links = get_hdm_links(post["url"])
+
+                all_files = []
+
+                for item in hdm_links:
+
+                    files = extract_gdflix_data(item["url"])
+
+                    all_files.extend(files)
+
+                unique = []
+                used = set()
+
+                for x in all_files:
+
+                    if x["link"] in used:
+                        continue
+
+                    used.add(x["link"])
+                    unique.append(x)
+
+                for file in unique:
+
+                    send_to_telegram(file)
+
+                    print("[HDMOVIE2] Sent:", file["title"])
+
+                    time.sleep(2)
+
+                seen.add(post["url"])
+                save_seen(seen)
+
+
+        except Exception as e:
+            print("MAIN ERROR:", e)
+
+        print("Sleeping...")
         time.sleep(CHECK_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
