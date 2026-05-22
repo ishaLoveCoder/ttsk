@@ -1,0 +1,10 @@
+{
+  "sky_domain": "https://skymovieshd.fast/",
+  "hdm_rss": "https://hdmovie2.com.se/movies/feed/",
+  "interval": 900,
+  "tag_username": "@username",
+  "tag_id": 123456789,
+  "channels": [],
+  "sky_enabled": true,
+  "hdm_enabled": true
+}
