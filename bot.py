@@ -33,8 +33,8 @@ def load_config():
             return json.load(f)
     except:
         return {
-            "sky_domain": "https://skymovieshd.fast/",
-            "hdm_rss": "https://hdmovie2.com.se/movies/feed/",
+            "sky_domain": "https://skymovieshd.free/",
+            "hdm_rss": "https://hdmovie2.org.uk/movies/feed/",
             "interval": 900,
             "tag_username": "@username",
             "tag_id": 123456789,
