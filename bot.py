@@ -337,16 +337,20 @@ def get_ef_hubcloud(ls_url):
 # ================= SEND =================
 def send_to_telegram(data, source="sky"):
     cfg = load_config()
-    channels = cfg.get("channels", [])
     tag_line = f"Tag: {cfg['tag_username']} {cfg['tag_id']}"
     cmd = cfg.get(f"{source}_cmd", "/l2")
     message = f"{cmd} {data['link']} -n {data['title']}\n{tag_line}"
-    targets = channels if channels else [int(os.getenv("POST_CHAT_ID", "0"))]
+
+    # Per-source channels, fallback to common channels, fallback to env
+    source_channels = cfg.get(f"{source}_channels", [])
+    common_channels = cfg.get("channels", [])
+    targets = source_channels or common_channels or [int(os.getenv("POST_CHAT_ID", "0"))]
+
     for chat_id in targets:
         try:
             bot.send_message(chat_id, message)
         except Exception as e:
-            print(f"Send error: {e}")
+            print(f"Send error to {chat_id}: {e}")
     increment_stat(source)
 
 
@@ -669,6 +673,117 @@ def cmd_testcaption(message):
     detail = "\n".join([f"{k}: {v}" for k, v in parts.items() if v])
     bot.reply_to(message, f"Parsed:\n{detail}\n\nSky: {sky_out}\nHDM: {hdm_out}\nEF:  {ef_out}")
 
+
+
+@bot.message_handler(commands=["addskychat"])
+def cmd_addskychat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /addskychat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid not in cfg["sky_channels"]:
+        cfg["sky_channels"].append(cid); save_config(cfg)
+        bot.reply_to(message, f"Sky channel added: {p[1]}")
+    else:
+        bot.reply_to(message, "Already hai Sky list mein.")
+
+@bot.message_handler(commands=["addhdmchat"])
+def cmd_addhdmchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /addhdmchat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid not in cfg["hdm_channels"]:
+        cfg["hdm_channels"].append(cid); save_config(cfg)
+        bot.reply_to(message, f"HDM channel added: {p[1]}")
+    else:
+        bot.reply_to(message, "Already hai HDM list mein.")
+
+@bot.message_handler(commands=["artefchat"])
+def cmd_artefchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /artefchat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid not in cfg["ef_channels"]:
+        cfg["ef_channels"].append(cid); save_config(cfg)
+        bot.reply_to(message, f"EF channel added: {p[1]}")
+    else:
+        bot.reply_to(message, "Already hai EF list mein.")
+
+@bot.message_handler(commands=["setskychat"])
+def cmd_setskychat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /setskychat -100xxxxxxxx"); return
+    cfg = load_config(); cfg["sky_channels"] = [int(p[1])]; save_config(cfg)
+    bot.reply_to(message, f"Sky channel set: {p[1]}")
+
+@bot.message_handler(commands=["sethdmchat"])
+def cmd_sethdmchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /sethdmchat -100xxxxxxxx"); return
+    cfg = load_config(); cfg["hdm_channels"] = [int(p[1])]; save_config(cfg)
+    bot.reply_to(message, f"HDM channel set: {p[1]}")
+
+@bot.message_handler(commands=["setefchat"])
+def cmd_setefchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /setefchat -100xxxxxxxx"); return
+    cfg = load_config(); cfg["ef_channels"] = [int(p[1])]; save_config(cfg)
+    bot.reply_to(message, f"EF channel set: {p[1]}")
+
+@bot.message_handler(commands=["removeskychat"])
+def cmd_removeskychat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /removeskychat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid in cfg["sky_channels"]:
+        cfg["sky_channels"].remove(cid); save_config(cfg)
+        bot.reply_to(message, f"Sky channel removed: {p[1]}")
+    else:
+        bot.reply_to(message, "Channel nahi mila Sky list mein.")
+
+@bot.message_handler(commands=["removehdmchat"])
+def cmd_removehdmchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /removehdmchat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid in cfg["hdm_channels"]:
+        cfg["hdm_channels"].remove(cid); save_config(cfg)
+        bot.reply_to(message, f"HDM channel removed: {p[1]}")
+    else:
+        bot.reply_to(message, "Channel nahi mila HDM list mein.")
+
+@bot.message_handler(commands=["removefefchat"])
+def cmd_removefefchat(message):
+    if not is_admin(message): return
+    p = message.text.strip().split()
+    if len(p) < 2: bot.reply_to(message, "Usage: /removefefchat -100xxxxxxxx"); return
+    cfg = load_config(); cid = int(p[1])
+    if cid in cfg["ef_channels"]:
+        cfg["ef_channels"].remove(cid); save_config(cfg)
+        bot.reply_to(message, f"EF channel removed: {p[1]}")
+    else:
+        bot.reply_to(message, "Channel nahi mila EF list mein.")
+
+@bot.message_handler(commands=["channels"])
+def cmd_channels(message):
+    if not is_admin(message): return
+    cfg = load_config()
+    def fmt(lst): return ", ".join(str(c) for c in lst) if lst else "None"
+    bot.reply_to(message, (
+        f"Channel List\n\n"
+        f"Sky:    {fmt(cfg.get('sky_channels',[]))}\n"
+        f"HDM:    {fmt(cfg.get('hdm_channels',[]))}\n"
+        f"EF:     {fmt(cfg.get('ef_channels',[]))}\n"
+        f"Common: {fmt(cfg.get('channels',[]))}\n\n"
+        f"(Common = fallback agar source channel empty ho)"
+    ))
 
 @bot.message_handler(commands=["settings"])
 def cmd_settings(message):
