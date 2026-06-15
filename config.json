@@ -11,6 +11,7 @@
   "hdm_channels": [],
   "ef_channels": [],
   "ff_channels": [],
+  "chat_overrides": {},
   "sky_enabled": true,
   "hdm_enabled": true,
   "ef_enabled": true,
@@ -27,6 +28,8 @@
   "sky_series_caption": "{title} ({year}) {season} {episode} {complete} {quality} {language} {source} {codec} {esub}.mkv",
   "hdm_movie_caption": "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
   "hdm_series_caption": "{title} ({year}) {season} {episode} {complete} {quality} {language} {source} {codec} {esub}.mkv",
-  "ef_movie_caption": "{title} ({year}) {quality} {language} {esub}.mkv",
-  "ff_movie_caption": "{title} ({year}) {quality} {language} {esub}.mkv"
+  "ef_movie_caption": "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
+  "ef_series_caption": "{title} ({year}) {season} {episode} {complete} {quality} {language} {source} {codec} {esub}.mkv",
+  "ff_movie_caption": "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
+  "ff_series_caption": "{title} ({year}) {season} {episode} {complete} {quality} {language} {source} {codec} {esub}.mkv"
 }
