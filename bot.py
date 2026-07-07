@@ -7,10 +7,7 @@ import os
 import threading
 import requests
 import telebot
-import feedparser
 from datetime import date
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID  = int(os.getenv("ADMIN_ID", "0"))
@@ -180,7 +177,7 @@ def apply_caption(parts, fmt):
     result = re.sub(r'\s+\.mkv$', '.mkv', result)
     return result
 
-def get_fmt(source, parts):
+def get_fmt(source, parts, chat_id=None):
     cfg = load_config()
     is_series = bool(parts.get('season') or parts.get('episode') or parts.get('complete'))
     defaults = {
@@ -190,8 +187,11 @@ def get_fmt(source, parts):
         "ff":  (DEFAULT_FF_MOVIE,  DEFAULT_FF_SERIES),
     }
     dm, ds = defaults.get(source, (DEFAULT_SKY_MOVIE, DEFAULT_SKY_SERIES))
-    key = f"{source}_series_caption" if is_series else f"{source}_movie_caption"
-    return cfg.get(key, ds if is_series else dm)
+    cap_key = f"{source}_series_caption" if is_series else f"{source}_movie_caption"
+    global_val = cfg.get(cap_key, ds if is_series else dm)
+    if chat_id:
+        return get_chat_override(cfg, chat_id, cap_key, global_val)
+    return global_val
 
 def clean_title(raw, source="sky"):
     p = parse_title(raw)
@@ -210,325 +210,45 @@ def fetch_title_via_jina(gdflix_url):
         print(f"Jina error: {e}")
     return None
 
-# ================= SKYMOVIES =================
-def get_sky_posts():
-    cfg = load_config()
-    HEADERS["Referer"] = cfg["sky_domain"]
-    r = requests.get(cfg["sky_domain"], headers=HEADERS, timeout=20)
-    soup = BeautifulSoup(r.text, "lxml")
-    posts = []
-    seen_urls = set()
-    for a in soup.select("div.Fmvideo a[href*='movie/']"):
-        href = a.get("href", "").strip()
-        title = a.get_text(" ", strip=True)
-        if not href or not title: continue
-        full_url = urljoin(cfg["sky_domain"], href)
-        if full_url not in seen_urls:
-            seen_urls.add(full_url)
-            posts.append({"title": title, "url": full_url})
-    return posts
-
-def _sky_title_from_html(html):
-    m = re.search(r"<div class='Robiul'>\s*Download\s*(.*?)</div>", html, re.S | re.I)
-    if m: return BeautifulSoup(m.group(1), "lxml").get_text(" ", strip=True)
-    m2 = re.search(r"<title>\s*(.*?)\s*(?:Full Movie Download|Download)", html, re.I)
-    return m2.group(1).strip() if m2 else "Unknown Movie"
-
-def _sky_protected_html(html, movie_url):
-    gd = re.search(r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>', html, re.I)
-    if not gd:
-        gd = re.search(r'<a href=[\'"]([^\'"]+)[\'"][^>]*>(?:Download Now|V-Cloud|HubCloud|Direct Links?)</a>', html, re.I)
-    if not gd: return None, None
-    r2 = requests.get(gd.group(1).strip(),
-                      headers={"User-Agent": HEADERS["User-Agent"], "Referer": movie_url},
-                      timeout=20, allow_redirects=True)
-    return r2.text, r2.url
-
-def extract_gofile_link(movie_url):
-    cfg = load_config(); HEADERS["Referer"] = cfg["sky_domain"]
-    r = requests.get(movie_url, headers=HEADERS, timeout=20)
-    raw_title = _sky_title_from_html(r.text)
-    ph, _ = _sky_protected_html(r.text, movie_url)
-    if not ph: return None
-    m = re.findall(r'https?://(?:www\.)?gofile\.io/d/[A-Za-z0-9]+', ph, re.I)
-    return {"title": clean_title(raw_title, "sky"), "link": m[0].strip()} if m else None
-
-def extract_gdflix_sky_link(movie_url):
-    cfg = load_config(); HEADERS["Referer"] = cfg["sky_domain"]
-    r = requests.get(movie_url, headers=HEADERS, timeout=20)
-    raw_title = _sky_title_from_html(r.text)
-    ph, _ = _sky_protected_html(r.text, movie_url)
-    if not ph: return None
-    for pat in [r'https?://gdflix\.[^\s"\'<>]+', r'https?://gdlink\.[^\s"\'<>]+']:
-        m = re.findall(pat, ph, re.I)
-        if m: return {"title": clean_title(raw_title, "sky"), "link": m[0].strip()}
-    return None
-
-def extract_hubcloud_sky_link(movie_url):
-    cfg = load_config(); HEADERS["Referer"] = cfg["sky_domain"]
-    r = requests.get(movie_url, headers=HEADERS, timeout=20)
-    raw_title = _sky_title_from_html(r.text)
-    ph, rurl = _sky_protected_html(r.text, movie_url)
-    if not ph: return None
-    for pat in [r'https?://hubcloud\.[^\s"\']+/drive/[A-Za-z0-9]+']:
-        m = re.findall(pat, ph, re.I)
-        if m: return {"title": clean_title(raw_title, "sky"), "link": max(m, key=len).strip()}
-    if rurl and "hubcloud" in rurl.lower():
-        return {"title": clean_title(raw_title, "sky"), "link": rurl.strip()}
-    return None
-
-def extract_sky_link(movie_url):
-    ext = load_config().get("sky_extractor", "gofile").lower()
-    if ext == "gdflix": return extract_gdflix_sky_link(movie_url)
-    if ext == "hubcloud": return extract_hubcloud_sky_link(movie_url)
-    return extract_gofile_link(movie_url)
-
-# ================= HDMOVIE2 =================
-def get_hdm_posts():
-    cfg = load_config()
-    feed = feedparser.parse(cfg["hdm_rss"])
-    return [{"title": item.title, "url": item.link} for item in feed.entries]
-
-def get_hdm_links(movie_url):
-    try:
-        r = requests.get(movie_url, headers=HEADERS, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
-        return [{"label": a.get_text(" ", strip=True), "url": a["href"]}
-                for a in soup.find_all("a", href=True) if "hdm.im" in a["href"]]
-    except Exception as e:
-        print("HDM ERROR:", e); return []
-
-def extract_gdflix_data(hdm_url):
-    try:
-        r = requests.get(hdm_url, headers=HEADERS, allow_redirects=True, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
-        final = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "gdflix" not in href.lower(): continue
-            try:
-                jina_title = fetch_title_via_jina(href)
-                if jina_title:
-                    raw_title = jina_title
-                    final_url = href
-                else:
-                    r2 = requests.get(href, headers=HEADERS, allow_redirects=True, timeout=20)
-                    tm = re.search(r"<title>(.*?)</title>", r2.text, re.I)
-                    raw_title = tm.group(1) if tm else "Unknown"
-                    final_url = r2.url
-                final.append({"title": clean_title(raw_title, "hdm"), "link": final_url})
-            except Exception as e:
-                print("GD ERROR:", e)
-        return final
-    except Exception as e:
-        print("HDM FINAL ERROR:", e); return []
-
-# ================= EXTRAFLIX (Updated) =================
-def get_ef_posts():
-    cfg = load_config()
-    url = cfg.get("ef_url", "https://e4.extraflix.mobi/")
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
-        soup = BeautifulSoup(r.text, "html.parser")
-        movies = []
-        for article in soup.select("article"):
-            if "category-movies" not in article.get("class", []): continue
-            a = article.select_one("h2.entry-title a")
-            if a: movies.append({"title": a.get_text(strip=True), "url": a["href"]})
-        return movies
-    except Exception as e:
-        print("EF POSTS ERROR:", e); return []
-
-def get_ef_links(movie_url):
-    """ExtraFlix: linkshub se drivehub + hubcloud dono nikalo"""
-    try:
-        r = requests.get(movie_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        linkshub_url = None
-        for a in soup.find_all("a", href=True):
-            if "linkshub.fun" in a["href"].lower():
-                linkshub_url = a["href"]; break
-
-        if not linkshub_url:
-            return {"drivehub": [], "hubcloud": []}
-
-        print("EF Linkshub:", linkshub_url)
-        r2 = requests.get(linkshub_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-        soup2 = BeautifulSoup(r2.text, "html.parser")
-
-        drivehub, hubcloud = [], []
-        for a in soup2.find_all("a", href=True):
-            href = a["href"]
-            if "drivehub" in href.lower() and href not in drivehub:
-                drivehub.append(href)
-            elif "hubcloud" in href.lower() and href not in hubcloud:
-                hubcloud.append(href)
-
-        return {"drivehub": drivehub, "hubcloud": hubcloud}
-    except Exception as e:
-        print("EF LINKS ERROR:", e)
-        return {"drivehub": [], "hubcloud": []}
-
-def get_ef_final_links(movie_url, post_title, extractor="hubcloud"):
-    links = get_ef_links(movie_url)
-    results = []
-
-    if extractor == "drivehub":
-        target = links["drivehub"]
-    elif extractor == "hubcloud":
-        target = links["hubcloud"]
-    else:  # all
-        target = links["drivehub"] + links["hubcloud"]
-
-    for link in target:
-        try:
-            r = requests.get(link, headers={"User-Agent": "Mozilla/5.0"},
-                             timeout=30, allow_redirects=True)
-            tm = re.search(r"<title>(.*?)</title>", r.text, re.I | re.S)
-            raw = tm.group(1).strip() if tm else post_title
-            results.append({"title": clean_title(raw, "ef"), "link": r.url})
-        except Exception as e:
-            print("EF FINAL LINK ERROR:", e)
-    return results
-
-# ================= FILMYFLY (Updated) =================
-def parse_size(size_str):
-    size_str = size_str.upper()
-    m = re.search(r'([\d.]+)\s*(MB|GB)', size_str)
-    if not m: return 0
-    val, unit = float(m.group(1)), m.group(2)
-    return val * 1024 if unit == 'GB' else val
-
-FF_LINK_PATTERNS = {
-    "gofile":      r'gofile\.io',
-    "gdflix":      r'gdflix\.|gdlink\.',
-    "hubcloud":    r'hubcloud\.',
-    "drivehub":    r'drivehub\.',
-    "buzzheavier": r'buzzheavier\.com',
-    "r2":          r'r2\.dev',
-    "telegram":    r't\.me',
-    "filesdl":     r'filesdl\.in',
-    "iwebp":       r'iwebp\.store',
-}
-
-def get_ff_posts():
-    cfg = load_config()
-    base = cfg.get("ff_url", "https://filmyfly.builders/")
-    try:
-        r = requests.get(base, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-        soup = BeautifulSoup(r.text, "html.parser")
-        posts = []
-        # Multiple selectors try karo
-        links = soup.select('.A10 a[href*="/page-download/"]')
-        if not links:
-            links = soup.select('a[href*="/page-download/"]')
-        for a in links:
-            href = a.get("href", "")
-            if not href: continue
-            if not href.startswith("http"):
-                href = base.rstrip("/") + "/" + href.lstrip("/")
-            title = a.get_text(strip=True) or "Unknown"
-            posts.append({"title": title, "url": href})
-        # Deduplicate
-        seen = set()
-        unique = []
-        for p in posts:
-            if p["url"] not in seen:
-                seen.add(p["url"]); unique.append(p)
-        return unique
-    except Exception as e:
-        print("FF POSTS ERROR:", e); return []
-
-def get_ff_links(movie_url):
-    cfg = load_config()
-    size_limit = cfg.get("ff_size_limit_mb", 4096)
-    extractor = cfg.get("ff_extractor", "all").lower()
-    results = []
-
-    try:
-        r = requests.get(movie_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # linkmake.in link dhundho
-        linkmake = soup.find("a", href=re.compile(r'linkmake\.in'))
-        if not linkmake:
-            print(f"[FF] No linkmake found at {movie_url}")
-            return results
-
-        r2 = requests.get(linkmake["href"], headers={"User-Agent": "Mozilla/5.0"},
-                          timeout=30, allow_redirects=True)
-        soup2 = BeautifulSoup(r2.text, "html.parser")
-
-        # filesdl quality links
-        quality_links = soup2.find_all("a", href=re.compile(r'filesdl\.in'))
-        if not quality_links:
-            print(f"[FF] No quality links at linkmake page")
-            return results
-
-        for q_link in quality_links:
-            try:
-                r3 = requests.get(q_link["href"], headers={"User-Agent": "Mozilla/5.0"},
-                                  timeout=30, allow_redirects=True)
-                soup3 = BeautifulSoup(r3.text, "html.parser")
-
-                # Title
-                title_div = soup3.find("div", class_="title")
-                title_raw = title_div.text.strip() if title_div else "Movie"
-
-                # Size check
-                size_div = soup3.find(string=re.compile(r'Size:', re.I))
-                if size_div:
-                    size_text = size_div.strip().replace("Size:", "").strip()
-                    if parse_size(size_text) > size_limit:
-                        print(f"[FF] Skip large file: {title_raw} ({size_text})")
-                        continue
-
-                # Download buttons — multiple classes
-                dl_btns = soup3.find_all("a", href=True)
-                for btn in dl_btns:
-                    href = btn.get("href", "")
-                    if not href or href.startswith("data:"): continue
-                    # Only download-like links
-                    if not any(re.search(pat, href, re.I) for pat in FF_LINK_PATTERNS.values()):
-                        continue
-                    # Extractor filter
-                    if extractor != "all":
-                        pat = FF_LINK_PATTERNS.get(extractor, "")
-                        if pat and not re.search(pat, href, re.I): continue
-
-                    results.append({
-                        "title": clean_title(title_raw, "ff"),
-                        "link": href
-                    })
-            except Exception as e:
-                print("FF QUALITY ERROR:", e)
-
-    except Exception as e:
-        print("FF LINKS ERROR:", e)
-
-    return results
+# ================= SITES (Sky / HDM / EF / FF) =================
+# Har site ka pura code ab sites/ folder mein hai (sky.py, hdm.py, ef.py, ff.py).
+# Yahan se import niche hai (functions define hone ke baad) taaki sites/*.py
+# files 'from bot import ...' kar sakein bina circular-import error ke.
 
 # ================= SEND (per-chat aware) =================
 def send_to_telegram(data, source="sky"):
     cfg = load_config()
-    tag_line = f"Tag: {cfg['tag_username']} {cfg['tag_id']}"
 
     source_channels = cfg.get(f"{source}_channels", [])
     common_channels = cfg.get("channels", [])
     targets = source_channels or common_channels or [int(os.getenv("POST_CHAT_ID", "0"))]
 
     for chat_id in targets:
-        # Per-chat override check
-        cmd = get_chat_override(cfg, chat_id, f"{source}_cmd",
-              cfg.get(f"{source}_cmd", "/l3"))
-        message = f"{cmd} {data['link']} -n {data['title']}\n{tag_line}"
+        # Per-chat overrides (fallback to global)
+        cmd      = get_chat_override(cfg, chat_id, f"{source}_cmd",      cfg.get(f"{source}_cmd", "/l3"))
+        tag_user = get_chat_override(cfg, chat_id, "tag_username",        cfg.get("tag_username", "@username"))
+        tag_id   = get_chat_override(cfg, chat_id, "tag_id",              cfg.get("tag_id", 0))
+        tag_line = f"Tag: {tag_user} {tag_id}"
+        message  = f"{cmd} {data['link']} -n {data['title']}\n{tag_line}"
         try:
             bot.send_message(chat_id, message)
         except Exception as e:
             print(f"Send error to {chat_id}: {e}")
 
     increment_stat(source)
+
+# ================= SITE IMPORTS =================
+# Sky/HDM/EF/FF ka pura code sites/ folder mein hai. Import yahan, end mein,
+# kyunki sites/*.py modules upar wale 'from bot import ...' karte hain — by
+# is point tak load_config, clean_title, fetch_title_via_jina, HEADERS,
+# send_to_telegram sab define ho chuke hain (no circular import issue).
+from sites.sky import (
+    get_sky_posts, extract_sky_link,
+    extract_gofile_link, extract_gdflix_sky_link, extract_hubcloud_sky_link,
+)
+from sites.hdm import get_hdm_posts, get_hdm_links, extract_gdflix_data
+from sites.ef import get_ef_posts, get_ef_linkshub_links, get_ef_hubcloud, get_ef_final_links
+from sites.ff import get_ff_posts, get_ff_links, parse_size, FF_LINK_PATTERNS
 
 # ================= HELP PAGES =================
 HELP_PAGES = [
@@ -550,18 +270,21 @@ HELP_PAGES = [
         "/settime 900"
     ),
     (
-        "RSS Bot (2/4) — Channels\n\n"
+        "RSS Bot (2/4) — Channels & Tags\n\n"
         "Common (fallback):\n"
         "/setchat ID | /addchat ID\n\n"
         "Per-source:\n"
         "/setskychat | /addskychat | /removeskychat\n"
         "/sethdmchat | /addhdmchat | /removehdmchat\n"
-        "/setefchat  | /artefchat  | /removefefchat\n"
-        "/setffchat  | /addffchat  | /removfffchat\n\n"
+        "/setefchat  | /addefchat  | /removeefchat\n"
+        "/setffchat  | /addffchat  | /removeffchat\n\n"
         "/channels — list dekho\n\n"
-        "TAG:\n"
+        "TAG (global):\n"
         "/settag @username\n"
-        "/settagid 123456789"
+        "/settagid 123456789\n\n"
+        "TAG (per-channel):\n"
+        "/settag @xyz -chatid -100xxx\n"
+        "/settagid 99999 -chatid -100xxx"
     ),
     (
         "RSS Bot (3/4) — CMD & Extractor\n\n"
@@ -574,25 +297,25 @@ HELP_PAGES = [
         "/setskycmd /l2 -chatid -100xxx\n"
         "/sethdmcmd /l2 -chatid -100xxx\n"
         "(same for ef, ff)\n\n"
-        "EXTRACTOR:\n"
+        "EXTRACTOR (global or per-chat):\n"
         "/setextractor gofile|gdflix|hubcloud\n"
-        "/setefextractor drivehub|hubcloud|all\n"
-        "/setffextractor gofile|gdflix|hubcloud|\n"
-        "  drivehub|buzzheavier|r2|filesdl|all\n\n"
+        "/setextractor hubcloud -chatid -100xxx\n"
+        "/setefextractor hubcloud|all\n"
+        "/setffextractor gofile|hubcloud|...\n\n"
         "FF SIZE:\n"
         "/setfflimit 4096"
     ),
     (
         "RSS Bot (4/4) — Captions\n\n"
-        "SET FORMAT:\n"
+        "SET FORMAT (global):\n"
         "/setskymovie FORMAT\n"
         "/setskyseries FORMAT\n"
-        "/sethdmmovie FORMAT\n"
-        "/sethdmseries FORMAT\n"
-        "/setefmovie FORMAT\n"
-        "/setefseries FORMAT\n"
-        "/setffmovie FORMAT\n"
-        "/setffseries FORMAT\n\n"
+        "/sethdmmovie FORMAT  /sethdmseries FORMAT\n"
+        "/setefmovie  FORMAT  /setefseries  FORMAT\n"
+        "/setffmovie  FORMAT  /setffseries  FORMAT\n\n"
+        "SET FORMAT (per-channel):\n"
+        "/setskymovie FORMAT -chatid -100xxx\n"
+        "(same for all others)\n\n"
         "Placeholders:\n"
         "{title} {year} {quality} {language}\n"
         "{source} {codec} {season} {episode}\n"
@@ -766,15 +489,15 @@ def h7(m): _add_channel(m, "hdm_channels", "HDM")
 def h8(m): _remove_channel(m, "hdm_channels", "HDM")
 @bot.message_handler(commands=["setefchat"])
 def h9(m): _set_channel(m, "ef_channels", "EF")
-@bot.message_handler(commands=["artefchat"])
+@bot.message_handler(commands=["addefchat"])
 def h10(m): _add_channel(m, "ef_channels", "EF")
-@bot.message_handler(commands=["removefefchat"])
+@bot.message_handler(commands=["removeefchat"])
 def h11(m): _remove_channel(m, "ef_channels", "EF")
 @bot.message_handler(commands=["setffchat"])
 def h12(m): _set_channel(m, "ff_channels", "FF")
 @bot.message_handler(commands=["addffchat"])
 def h13(m): _add_channel(m, "ff_channels", "FF")
-@bot.message_handler(commands=["removfffchat"])
+@bot.message_handler(commands=["removeffchat"])
 def h14(m): _remove_channel(m, "ff_channels", "FF")
 
 @bot.message_handler(commands=["channels"])
@@ -795,17 +518,29 @@ def cmd_channels(m):
 def cmd_settag(m):
     if not is_admin(m): return
     p = m.text.strip().split()
-    if len(p) < 2: return
-    cfg = load_config(); cfg["tag_username"] = p[1]; save_config(cfg)
-    bot.reply_to(m, f"Tag: {p[1]}")
+    if len(p) < 2: bot.reply_to(m, "Usage: /settag @xyz [-chatid -100xxx]"); return
+    p, chat_id = _parse_chatid_flag(p)
+    cfg = load_config()
+    if chat_id:
+        set_chat_override(cfg, chat_id, "tag_username", p[1]); save_config(cfg)
+        bot.reply_to(m, f"Tag for {chat_id}: {p[1]}")
+    else:
+        cfg["tag_username"] = p[1]; save_config(cfg)
+        bot.reply_to(m, f"Tag (global): {p[1]}")
 
 @bot.message_handler(commands=["settagid"])
 def cmd_settagid(m):
     if not is_admin(m): return
     p = m.text.strip().split()
-    if len(p) < 2: return
-    cfg = load_config(); cfg["tag_id"] = int(p[1]); save_config(cfg)
-    bot.reply_to(m, f"Tag ID: {p[1]}")
+    if len(p) < 2: bot.reply_to(m, "Usage: /settagid 123456 [-chatid -100xxx]"); return
+    p, chat_id = _parse_chatid_flag(p)
+    cfg = load_config()
+    if chat_id:
+        set_chat_override(cfg, chat_id, "tag_id", int(p[1])); save_config(cfg)
+        bot.reply_to(m, f"Tag ID for {chat_id}: {p[1]}")
+    else:
+        cfg["tag_id"] = int(p[1]); save_config(cfg)
+        bot.reply_to(m, f"Tag ID (global): {p[1]}")
 
 # --- CMD per-chat support ---
 def _set_cmd(m, source):
@@ -833,35 +568,29 @@ def cmd_setefcmd(m): _set_cmd(m, "ef")
 def cmd_setffcmd(m): _set_cmd(m, "ff")
 
 # --- Extractors ---
-@bot.message_handler(commands=["setextractor"])
-def cmd_setextractor(m):
+def _set_extractor(m, cfg_key, valid, name):
     if not is_admin(m): return
     p = m.text.strip().split()
-    valid = ["gofile","gdflix","hubcloud"]
     if len(p) < 2 or p[1].lower() not in valid:
-        bot.reply_to(m, f"Usage: /setextractor {'|'.join(valid)}"); return
-    cfg = load_config(); cfg["sky_extractor"] = p[1].lower(); save_config(cfg)
-    bot.reply_to(m, f"Sky extractor: {p[1].lower()}")
+        bot.reply_to(m, f"Usage: {p[0]} {'|'.join(valid)} [-chatid -100xxx]"); return
+    p, chat_id = _parse_chatid_flag(p)
+    val = p[1].lower()
+    cfg = load_config()
+    if chat_id:
+        set_chat_override(cfg, chat_id, cfg_key, val); save_config(cfg)
+        bot.reply_to(m, f"{name} extractor for {chat_id}: {val}")
+    else:
+        cfg[cfg_key] = val; save_config(cfg)
+        bot.reply_to(m, f"{name} extractor (global): {val}")
+
+@bot.message_handler(commands=["setextractor"])
+def cmd_setextractor(m): _set_extractor(m, "sky_extractor", ["gofile","gdflix","hubcloud"], "Sky")
 
 @bot.message_handler(commands=["setefextractor"])
-def cmd_setefextractor(m):
-    if not is_admin(m): return
-    p = m.text.strip().split()
-    valid = ["drivehub","hubcloud","all"]
-    if len(p) < 2 or p[1].lower() not in valid:
-        bot.reply_to(m, f"Usage: /setefextractor {'|'.join(valid)}"); return
-    cfg = load_config(); cfg["ef_extractor"] = p[1].lower(); save_config(cfg)
-    bot.reply_to(m, f"EF extractor: {p[1].lower()}")
+def cmd_setefextractor(m): _set_extractor(m, "ef_extractor", ["hubcloud","all"], "EF")
 
 @bot.message_handler(commands=["setffextractor"])
-def cmd_setffextractor(m):
-    if not is_admin(m): return
-    p = m.text.strip().split()
-    valid = list(FF_LINK_PATTERNS.keys()) + ["all"]
-    if len(p) < 2 or p[1].lower() not in valid:
-        bot.reply_to(m, f"Options: {'|'.join(valid)}"); return
-    cfg = load_config(); cfg["ff_extractor"] = p[1].lower(); save_config(cfg)
-    bot.reply_to(m, f"FF extractor: {p[1].lower()}")
+def cmd_setffextractor(m): _set_extractor(m, "ff_extractor", list(FF_LINK_PATTERNS.keys()) + ["all"], "FF")
 
 @bot.message_handler(commands=["setfflimit"])
 def cmd_setfflimit(m):
@@ -879,10 +608,23 @@ SAMPLE_SERIES = {"title":"Show","year":"2026","quality":"1080p","language":"Hind
 
 def _set_cap(m, key, sample):
     if not is_admin(m): return
-    p = m.text.strip().split(maxsplit=1)
-    if len(p) < 2: bot.reply_to(m, "Format daalna zaroori hai."); return
-    cfg = load_config(); cfg[key] = p[1].strip(); save_config(cfg)
-    bot.reply_to(m, f"Saved!\nPreview: {apply_caption(sample, p[1].strip())}")
+    text = m.text.strip()
+    # -chatid flag support: /setskymovie FORMAT -chatid -100xxx
+    chat_id = None
+    ci_match = re.search(r'-chatid\s+(-?\d+)', text)
+    if ci_match:
+        chat_id = int(ci_match.group(1))
+        text = text[:ci_match.start()].strip()
+    p = text.split(maxsplit=1)
+    if len(p) < 2: bot.reply_to(m, "Format daalna zaroori hai.\nOptional: -chatid -100xxx"); return
+    fmt_val = p[1].strip()
+    cfg = load_config()
+    if chat_id:
+        set_chat_override(cfg, chat_id, key, fmt_val); save_config(cfg)
+        bot.reply_to(m, f"Saved for {chat_id}!\nPreview: {apply_caption(sample, fmt_val)}")
+    else:
+        cfg[key] = fmt_val; save_config(cfg)
+        bot.reply_to(m, f"Saved (global)!\nPreview: {apply_caption(sample, fmt_val)}")
 
 @bot.message_handler(commands=["setskymovie"])
 def c1(m): _set_cap(m, "sky_movie_caption", SAMPLE_MOVIE)
