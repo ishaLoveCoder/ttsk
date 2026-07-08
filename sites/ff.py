@@ -74,7 +74,7 @@ def get_ff_links(movie_url):
                           timeout=30, allow_redirects=True)
         soup2 = BeautifulSoup(r2.text, "html.parser")
 
-        quality_links = soup2.find_all("a", href=re.compile(r'filesdl\.in'))
+        quality_links = soup2.find_all("a", href=re.compile(r'filesdl'))
         if not quality_links:
             print(f"[FF] No quality links at linkmake page")
             return results
