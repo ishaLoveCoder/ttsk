@@ -50,6 +50,7 @@ def default_config():
         "ef_extractor": "hubcloud",
         "ff_extractor": "all",
         "ff_size_limit_mb": 4096,
+        "complete_word": "Complete",  # change via /setcompleteword
         "sky_cmd": "/l3", "hdm_cmd": "/l3", "ef_cmd": "/l3", "ff_cmd": "/l3",
         # captions
         "sky_movie_caption":  "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
@@ -148,7 +149,9 @@ def parse_title(raw):
         p['episode'] = f"EP{ep.group(1).zfill(2)}-{ep.group(2).zfill(2)}" if ep.group(2) else f"EP{ep.group(1).zfill(2)}"
     else:
         p['episode'] = ''
-    p['complete'] = 'Complete' if re.search(r'\bcomplete\b', raw, re.I) else ''
+    _cw = load_config().get("complete_word", "Complete")
+    p['complete'] = _cw if re.search(r'\bcomplete\b', raw, re.I) else ''
+    p['combine'] = _cw  # alias: {combine} works same as {complete}
     p['esub'] = 'Esub'
     if y:
         title_part = raw[:y.start()].strip().rstrip('.-\u2013 ')
@@ -156,7 +159,7 @@ def parse_title(raw):
         title_part = raw[:q.start()].strip().rstrip('.-\u2013 ')
     else:
         title_part = raw
-    p['title'] = title_part.strip()
+    p['title'] = title_part.strip().rstrip('.(- ')
     return p
 
 DEFAULT_SKY_MOVIE  = "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv"
@@ -172,7 +175,9 @@ def apply_caption(parts, fmt):
     result = fmt
     for k, v in parts.items():
         result = result.replace('{' + k + '}', v)
-    result = re.sub(r'\(\s*\)', '', result)
+    result = re.sub(r'\(\s*\)', '', result)       # empty ()
+    result = re.sub(r'\(\s+', '(', result)          # "( 2025" → "(2025"
+    result = re.sub(r'\s+\)', ')', result)           # "2025 )" → "2025)"
     result = re.sub(r'\s{2,}', ' ', result).strip()
     result = re.sub(r'\s+\.mkv$', '.mkv', result)
     return result
@@ -198,16 +203,25 @@ def clean_title(raw, source="sky"):
     return apply_caption(p, get_fmt(source, p))
 
 # ================= JINA TITLE =================
-def fetch_title_via_jina(gdflix_url):
-    try:
-        r = requests.get(f"https://r.jina.ai/{gdflix_url}",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        m = re.search(r'Title:\s*GDFlix\s*\|\s*(.+?)(?:\n|URL Source)', r.text, re.I)
-        if m: return m.group(1).strip()
-        m2 = re.search(r'Name\s*:\s*([^\n]+\.mkv)', r.text, re.I)
-        if m2: return m2.group(1).strip()
-    except Exception as e:
-        print(f"Jina error: {e}")
+def fetch_title_via_jina(gdflix_url, retries=2, timeout=30):
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(f"https://r.jina.ai/{gdflix_url}",
+                             headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            m = re.search(r'Title:\s*GDFlix\s*\|\s*(.+?)(?:\n|URL Source)', r.text, re.I)
+            if m: return m.group(1).strip()
+            m2 = re.search(r'Name\s*:\s*([^\n]+\.mkv)', r.text, re.I)
+            if m2: return m2.group(1).strip()
+            return None
+        except requests.exceptions.Timeout:
+            if attempt < retries:
+                print(f"Jina timeout, retry {attempt+1}/{retries}...")
+                time.sleep(3)
+            else:
+                print("Jina: max retries reached, skipping.")
+        except Exception as e:
+            print(f"Jina error: {e}")
+            break
     return None
 
 # ================= SITES (Sky / HDM / EF / FF) =================
@@ -319,7 +333,11 @@ HELP_PAGES = [
         "Placeholders:\n"
         "{title} {year} {quality} {language}\n"
         "{source} {codec} {season} {episode}\n"
-        "{complete} {esub}\n\n"
+        "{complete}/{combine} {esub}\n\n"
+        "/setcompleteword Combine\n"
+        "(change 'Complete' to any word)\n\n"
+        "/replace -skyseries {complete} {combine}\n"
+        "(placeholder rename in saved format)\n\n"
         "/showcaption | /resetcaption\n"
         "/testcaption <title>\n\n"
         "INFO:\n"
@@ -685,6 +703,81 @@ def cmd_testcaption(m):
         f"EF:   {apply_caption(parts, get_fmt('ef', parts))}\n"
         f"FF:   {apply_caption(parts, get_fmt('ff', parts))}"
     ))
+
+
+# ================= /replace command =================
+_REPLACE_KEY_MAP = {
+    "-skymovie":  "sky_movie_caption",
+    "-skyseries": "sky_series_caption",
+    "-hdmmovie":  "hdm_movie_caption",
+    "-hdmseries": "hdm_series_caption",
+    "-efmovie":   "ef_movie_caption",
+    "-efseries":  "ef_series_caption",
+    "-ffmovie":   "ff_movie_caption",
+    "-ffseries":  "ff_series_caption",
+}
+
+@bot.message_handler(commands=["replace"])
+def cmd_replace(m):
+    if not is_admin(m): return
+    # Usage: /replace -skyseries {complete} {combine}
+    # or:   /replace -skyseries {complete} {combine} -chatid -100xxx
+    p = m.text.strip().split()
+    usage = (
+        "Usage: /replace -<target> {old} {new}\n"
+        "Targets: -skymovie -skyseries -hdmmovie -hdmseries\n"
+        "         -efmovie -efseries -ffmovie -ffseries\n\n"
+        "Example:\n"
+        "/replace -skyseries {complete} {combine}\n"
+        "/replace -efmovie {source} {codec}\n\n"
+        "Optional per-channel: add -chatid -100xxx at end"
+    )
+    if len(p) < 4:
+        bot.reply_to(m, usage); return
+
+    target = p[1].lower()
+    if target not in _REPLACE_KEY_MAP:
+        bot.reply_to(m, f"Unknown target: {target}\n\n" + usage); return
+
+    old_word = p[2]
+    new_word = p[3]
+
+    # -chatid support
+    chat_id = None
+    if "-chatid" in p:
+        idx = p.index("-chatid")
+        if idx + 1 < len(p):
+            try: chat_id = int(p[idx + 1])
+            except: bot.reply_to(m, "Invalid chatid"); return
+
+    cfg_key = _REPLACE_KEY_MAP[target]
+    cfg = load_config()
+
+    if chat_id:
+        # per-channel: get current override or global
+        current = get_chat_override(cfg, chat_id, cfg_key, cfg.get(cfg_key, ""))
+        updated = current.replace(old_word, new_word)
+        if updated == current:
+            bot.reply_to(m, f"'{old_word}' nahi mila caption mein:\n{current}"); return
+        set_chat_override(cfg, chat_id, cfg_key, updated)
+        save_config(cfg)
+        bot.reply_to(m, f"Done (channel {chat_id})!\n\nBefore:\n{current}\n\nAfter:\n{updated}")
+    else:
+        current = cfg.get(cfg_key, "")
+        updated = current.replace(old_word, new_word)
+        if updated == current:
+            bot.reply_to(m, f"'{old_word}' nahi mila caption mein:\n{current}"); return
+        cfg[cfg_key] = updated
+        save_config(cfg)
+        bot.reply_to(m, f"Done (global)!\n\nBefore:\n{current}\n\nAfter:\n{updated}")
+
+@bot.message_handler(commands=["setcompleteword"])
+def cmd_setcompleteword(m):
+    if not is_admin(m): return
+    p = m.text.strip().split(maxsplit=1)
+    if len(p) < 2: bot.reply_to(m, "Usage: /setcompleteword Combine\nDefault: Complete\nAlias {combine} bhi kaam karta hai"); return
+    cfg = load_config(); cfg["complete_word"] = p[1].strip(); save_config(cfg)
+    bot.reply_to(m, f"Complete word set: {p[1].strip()}\n(Use {{complete}} or {{combine}} in caption format)")
 
 @bot.message_handler(commands=["settings"])
 def cmd_settings(m):
