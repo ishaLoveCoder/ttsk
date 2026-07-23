@@ -10,7 +10,7 @@ from bot import load_config, clean_title
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0"})
 
-_BLOCKED = re.compile(r'\bUNRATED\b', re.I)
+_BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
 
 
 def _clean_ef_filename(name):
