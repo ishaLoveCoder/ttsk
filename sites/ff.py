@@ -4,14 +4,21 @@
 import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 from bot import load_config, clean_title
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
+_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
 _BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
+
+def _get_proxied_url(url):
+    cfg = load_config()
+    cf_worker = cfg.get("cf_worker_url", "")
+    if cf_worker:
+        return f"{cf_worker}?url={quote(url, safe='')}"
+    return url
 
 def parse_size(size_str):
     size_str = size_str.upper()
@@ -37,7 +44,8 @@ def get_ff_posts(url=None):
     if not url:
         url = cfg.get("ff_url", "https://filmyfly.builders/")
     try:
-        r = _session.get(url, timeout=30)
+        fetch_url = _get_proxied_url(url)
+        r = _session.get(fetch_url, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         posts = []
@@ -73,7 +81,8 @@ def get_ff_links(movie_url):
     results    = []
 
     try:
-        r = _session.get(movie_url, timeout=30)
+        fetch_url = _get_proxied_url(movie_url)
+        r = _session.get(fetch_url, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
@@ -88,7 +97,8 @@ def get_ff_links(movie_url):
                 return results
         else:
             linkmake_url = urljoin(movie_url, linkmake.get("href", ""))
-            r2 = _session.get(linkmake_url, timeout=30, allow_redirects=True)
+            fetch_linkmake_url = _get_proxied_url(linkmake_url)
+            r2 = _session.get(fetch_linkmake_url, timeout=30, allow_redirects=True)
             r2.raise_for_status()
             soup2 = BeautifulSoup(r2.text, "html.parser")
             quality_links = soup2.find_all("a", href=re.compile(r'filesdl', re.I))
@@ -101,7 +111,8 @@ def get_ff_links(movie_url):
         for q_link in quality_links:
             try:
                 q_url = urljoin(linkmake_url if linkmake else movie_url, q_link.get("href", ""))
-                r3 = _session.get(q_url, timeout=30, allow_redirects=True)
+                fetch_q_url = _get_proxied_url(q_url)
+                r3 = _session.get(fetch_q_url, timeout=30, allow_redirects=True)
                 r3.raise_for_status()
                 soup3 = BeautifulSoup(r3.text, "html.parser")
 
