@@ -29,10 +29,11 @@ def load_config():
 
 def default_config():
     return {
-        "sky_domain": "https://skymovieshd.lgbt/",
+        "sky_domain": "https://skymovieshd.free/",
         "hdm_rss": "https://hdmovie2.org.uk/movies/feed/",
-        "ef_url": "https://e8.extraflix.mobi/",
-        "ff_url": "https://filmyfly.army/",
+        "ef_url": "https://e4.extraflix.mobi/",
+        "ff_url": "https://filmyfly.builders/",
+        "cf_worker_url": "", # Yahan CF Worker URL daalna command se
         "interval": 900,
         "tag_username": "@username",
         "tag_id": 123456789,
@@ -256,7 +257,6 @@ def send_to_telegram(data, source="sky", source_url=None):
     if not all_channels:
         all_channels = [int(os.getenv("POST_CHAT_ID", "0"))]
         
-    # Determine the global URL for this source
     if source == "sky": global_url = cfg.get("sky_domain", "")
     elif source == "hdm": global_url = cfg.get("hdm_rss", "")
     elif source == "ef": global_url = cfg.get("ef_url", "")
@@ -266,7 +266,6 @@ def send_to_telegram(data, source="sky", source_url=None):
     target_channels = []
     for chat_id in all_channels:
         if source_url:
-            # Check if this channel has an override for the URL
             chat_override_url = get_chat_override(cfg, chat_id, f"{source}_domain" if source=="sky" else f"{source}_url" if source!="hdm" else f"{source}_rss", global_url)
             if chat_override_url == source_url:
                 target_channels.append(chat_id)
@@ -311,9 +310,9 @@ HELP_PAGES = [
         "/sethdm RSS_URL\n"
         "/setef URL\n"
         "/setff URL\n\n"
-        "DOMAIN (Per-Channel):\n"
-        "/setsky URL -chatid -100xxx\n"
-        "/setef URL -chatid -100xxx\n\n"
+        "PROXY (CF Worker):\n"
+        "/setcfworker https://proxy.xxx.workers.dev\n"
+        "(Bypasses 403 Forbidden on Render)\n\n"
         "INTERVAL:\n"
         "/settime 900"
     ),
@@ -343,11 +342,9 @@ HELP_PAGES = [
         "/setffcmd /l3\n\n"
         "CMD PREFIX (per-chat):\n"
         "/setskycmd /l2 -chatid -100xxx\n"
-        "/sethdmcmd /l2 -chatid -100xxx\n"
-        "(same for ef, ff)\n\n"
+        "(same for hdm, ef, ff)\n\n"
         "EXTRACTOR (global or per-chat):\n"
         "/setextractor gofile|gdflix|hubcloud\n"
-        "/setextractor hubcloud -chatid -100xxx\n"
         "/setefextractor hubcloud|all\n"
         "/setffextractor gofile|hubcloud|...\n\n"
         "FF SIZE:\n"
@@ -361,19 +358,12 @@ HELP_PAGES = [
         "/sethdmmovie FORMAT  /sethdmseries FORMAT\n"
         "/setefmovie  FORMAT  /setefseries  FORMAT\n"
         "/setffmovie  FORMAT  /setffseries  FORMAT\n\n"
-        "SET FORMAT (per-channel):\n"
-        "/setskymovie FORMAT -chatid -100xxx\n"
-        "(same for all others)\n\n"
         "Placeholders:\n"
         "{title} {year} {quality} {language}\n"
         "{source} {codec} {season} {episode}\n"
         "{complete}/{combine} {esub}\n\n"
         "/setcompleteword Combine\n"
-        "(change 'Complete' to any word)\n\n"
-        "/replace -skyseries {complete} {combine}\n"
-        "(placeholder rename in saved format)\n\n"
-        "/showcaption | /resetcaption\n"
-        "/testcaption <title>\n\n"
+        "/replace -skyseries {complete} {combine}\n\n"
         "INFO:\n"
         "/settings | /status | /stats\n"
         "/latestsky|hdm|ef|ff"
@@ -451,7 +441,14 @@ def cmd_ff(message):
         threading.Thread(target=run_ff_check, args=(message.chat.id,), daemon=True).start()
     else: _toggle(message, "ff_enabled", "FilmyFly")
 
-# --- URL Setters (Per-Channel Support) ---
+# --- URL Setters ---
+def _parse_chatid_flag(parts):
+    if "-chatid" in parts:
+        idx = parts.index("-chatid")
+        if idx + 1 < len(parts):
+            return parts[:idx], int(parts[idx+1])
+    return parts, None
+
 def _set_url(m, source):
     if not is_admin(m): return
     p = m.text.strip().split(maxsplit=1)
@@ -476,6 +473,16 @@ def cmd_setef(m): _set_url(m, "ef")
 @bot.message_handler(commands=["setff"])
 def cmd_setff(m): _set_url(m, "ff")
 
+@bot.message_handler(commands=["setcfworker"])
+def cmd_setcfworker(m):
+    if not is_admin(m): return
+    p = m.text.strip().split(maxsplit=1)
+    if len(p) < 2: bot.reply_to(m, "Usage: /setcfworker https://your-worker.workers.dev"); return
+    cfg = load_config()
+    cfg["cf_worker_url"] = p[1].strip()
+    save_config(cfg)
+    bot.reply_to(m, f"CF Worker URL set! ExtraFlix/FilmyFly will use this to bypass 403.")
+
 @bot.message_handler(commands=["settime"])
 def cmd_settime(m):
     if not is_admin(m): return
@@ -485,13 +492,6 @@ def cmd_settime(m):
     bot.reply_to(m, f"Interval: {p[1]}s")
 
 # --- Channel helpers ---
-def _parse_chatid_flag(parts):
-    if "-chatid" in parts:
-        idx = parts.index("-chatid")
-        if idx + 1 < len(parts):
-            return parts[:idx], int(parts[idx+1])
-    return parts, None
-
 def _add_channel(m, key, name):
     if not is_admin(m): return
     p = m.text.strip().split()
@@ -806,6 +806,7 @@ def cmd_settings(m):
         f"HDM: {cfg['hdm_rss']} ({'ON' if cfg['hdm_enabled'] else 'OFF'})\n"
         f"EF:  {cfg.get('ef_url')} ({'ON' if cfg.get('ef_enabled') else 'OFF'})\n"
         f"FF:  {cfg.get('ff_url')} ({'ON' if cfg.get('ff_enabled') else 'OFF'})\n\n"
+        f"CF Proxy: {cfg.get('cf_worker_url', 'Not Set')}\n\n"
         f"Interval: {cfg['interval']}s\n"
         f"Tag: {cfg['tag_username']} {cfg['tag_id']}\n"
         f"Sky ext: {cfg.get('sky_extractor','gofile')}\n"
@@ -943,7 +944,9 @@ def run_ff_check(notify=None):
 # ================= MAIN =================
 def main():
     print("Bot Started...")
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    # skip_pending=True taaki purane pending messages drop ho jayein
+    # aur 409 conflict se bachne ke liye auto_reset_polling=True
+    threading.Thread(target=bot.infinity_polling, kwargs={'skip_pending': True, 'auto_reset_polling': True}, daemon=True).start()
     seen = load_seen()
 
     while True:
