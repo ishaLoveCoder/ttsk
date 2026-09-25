@@ -36,7 +36,7 @@ FF_LINK_PATTERNS = {
 
 def get_ff_posts():
     cfg = load_config()
-    base = cfg.get("ff_url", "https://filmyfly.builders/")
+    base = cfg.get("ff_url", "https://filmyfly.army/")
     try:
         r = _session.get(base, timeout=30)
         r.raise_for_status()
