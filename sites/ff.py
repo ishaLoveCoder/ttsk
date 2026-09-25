@@ -4,6 +4,7 @@
 import re
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 from bot import load_config, clean_title
 
@@ -12,14 +13,12 @@ _session.headers.update({"User-Agent": "Mozilla/5.0"})
 
 _BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
 
-
 def parse_size(size_str):
     size_str = size_str.upper()
     m = re.search(r'([\d.]+)\s*(MB|GB)', size_str)
     if not m: return 0
     val, unit = float(m.group(1)), m.group(2)
     return val * 1024 if unit == 'GB' else val
-
 
 FF_LINK_PATTERNS = {
     "gofile":      r'gofile\.io',
@@ -33,12 +32,12 @@ FF_LINK_PATTERNS = {
     "iwebp":       r'iwebp\.store',
 }
 
-
-def get_ff_posts():
+def get_ff_posts(url=None):
     cfg = load_config()
-    base = cfg.get("ff_url", "https://filmyfly.army/")
+    if not url:
+        url = cfg.get("ff_url", "https://filmyfly.builders/")
     try:
-        r = _session.get(base, timeout=30)
+        r = _session.get(url, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         posts = []
@@ -49,9 +48,7 @@ def get_ff_posts():
             href  = a.get("href", "")
             title = a.get_text(strip=True) or "Unknown"
             if not href: continue
-            if not href.startswith("http"):
-                href = base.rstrip("/") + "/" + href.lstrip("/")
-            # UNRATED filter
+            href = urljoin(url, href)
             if _BLOCKED.search(href) or _BLOCKED.search(title):
                 print(f"[FF] Skipping UNRATED: {href}")
                 continue
@@ -65,9 +62,7 @@ def get_ff_posts():
         print("FF POSTS ERROR:", e)
         return []
 
-
 def get_ff_links(movie_url):
-    # UNRATED check
     if _BLOCKED.search(movie_url):
         print(f"[FF] Skipping UNRATED: {movie_url}")
         return []
@@ -82,19 +77,18 @@ def get_ff_links(movie_url):
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # linkmake.in link
         linkmake = soup.find("a", href=re.compile(r'linkmake\.in'))
         if not linkmake:
-            # Try direct filesdl links on page itself
             direct_sdl = soup.find_all("a", href=re.compile(r'filesdl', re.I))
             if direct_sdl:
                 quality_links = direct_sdl
-                soup2 = soup  # already on filesdl page
+                soup2 = soup
             else:
                 print(f"[FF] No linkmake or filesdl found: {movie_url}")
                 return results
         else:
-            r2 = _session.get(linkmake["href"], timeout=30, allow_redirects=True)
+            linkmake_url = urljoin(movie_url, linkmake.get("href", ""))
+            r2 = _session.get(linkmake_url, timeout=30, allow_redirects=True)
             r2.raise_for_status()
             soup2 = BeautifulSoup(r2.text, "html.parser")
             quality_links = soup2.find_all("a", href=re.compile(r'filesdl', re.I))
@@ -103,22 +97,21 @@ def get_ff_links(movie_url):
             print(f"[FF] No quality links found: {movie_url}")
             return results
 
+        seen_links = set()
         for q_link in quality_links:
             try:
-                r3 = _session.get(q_link["href"], timeout=30, allow_redirects=True)
+                q_url = urljoin(linkmake_url if linkmake else movie_url, q_link.get("href", ""))
+                r3 = _session.get(q_url, timeout=30, allow_redirects=True)
                 r3.raise_for_status()
                 soup3 = BeautifulSoup(r3.text, "html.parser")
 
-                # Title
                 title_div = soup3.find("div", class_="title")
-                title_raw = title_div.text.strip() if title_div else "Movie"
+                title_raw = title_div.get_text(" ", strip=True) if title_div else "Movie"
 
-                # UNRATED check on individual file title
                 if _BLOCKED.search(title_raw):
                     print(f"[FF] Skipping UNRATED file: {title_raw}")
                     continue
 
-                # Size check
                 size_div = soup3.find(string=re.compile(r'Size:', re.I))
                 if size_div:
                     size_text = re.sub(r'Size:\s*', '', size_div, flags=re.I).strip()
@@ -126,20 +119,23 @@ def get_ff_links(movie_url):
                         print(f"[FF] Skip large: {title_raw} ({size_text})")
                         continue
 
-                # Download buttons — class-based first
                 dl_btns = soup3.find_all("a", class_=re.compile(r'^button[124]?$', re.I))
-                # Fallback: any link matching known patterns
                 if not dl_btns:
                     dl_btns = soup3.find_all("a", href=True)
 
                 for btn in dl_btns:
-                    href = btn.get("href", "")
+                    href = btn.get("href", "").strip()
                     if not href or href.startswith("data:"): continue
+                    href = urljoin(q_url, href)
+                    
                     if not any(re.search(pat, href, re.I) for pat in FF_LINK_PATTERNS.values()):
                         continue
                     if extractor != "all":
                         pat = FF_LINK_PATTERNS.get(extractor, "")
                         if pat and not re.search(pat, href, re.I): continue
+                    if href in seen_links: continue
+                    seen_links.add(href)
+                    
                     results.append({
                         "title": clean_title(title_raw, "ff"),
                         "link":  href
