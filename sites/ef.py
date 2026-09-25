@@ -4,21 +4,27 @@
 import re
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import quote
 
 from bot import load_config, clean_title
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
+_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
 _BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
+
+def _get_proxied_url(url):
+    cfg = load_config()
+    cf_worker = cfg.get("cf_worker_url", "")
+    if cf_worker:
+        return f"{cf_worker}?url={quote(url, safe='')}"
+    return url
 
 def _clean_ef_filename(name):
     name = re.sub(r"[-_. ]*ExtraFlix\.Pw", "", name, flags=re.I)
     name = re.sub(r"\s*-\s*[\d.]+\s*(MB|GB)\s*$", "", name, flags=re.I)
-
     if not re.search(r"\.(mkv|mp4|avi)$", name, re.I):
         name += ".mkv"
-
     name = re.sub(r"\.mkv$", ".Esub.mkv", name, flags=re.I)
     return name.strip()
 
@@ -28,7 +34,8 @@ def get_ef_posts(url=None):
         url = cfg.get("ef_url", "https://e3.extraflix.mobi/")
 
     try:
-        r = _session.get(url, timeout=30)
+        fetch_url = _get_proxied_url(url)
+        r = _session.get(fetch_url, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         movies = []
@@ -59,7 +66,8 @@ def get_ef_posts(url=None):
 
 def get_ef_linkshub_links(movie_url):
     try:
-        r = _session.get(movie_url, timeout=30)
+        fetch_url = _get_proxied_url(movie_url)
+        r = _session.get(fetch_url, timeout=30)
         r.raise_for_status()
         links = re.findall(r'https://links\.linkshub\.fun/view/[A-Za-z0-9]+', r.text, re.I)
         return list(dict.fromkeys(links))
@@ -69,7 +77,8 @@ def get_ef_linkshub_links(movie_url):
 
 def get_ef_hubcloud(linkshub_url):
     try:
-        r = _session.get(linkshub_url, timeout=30, allow_redirects=True)
+        fetch_url = _get_proxied_url(linkshub_url)
+        r = _session.get(fetch_url, timeout=30, allow_redirects=True)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         html = r.text
@@ -94,7 +103,8 @@ def get_ef_hubcloud(linkshub_url):
 
         if hubdrive_url:
             try:
-                r2 = _session.get(hubdrive_url, timeout=30, allow_redirects=True)
+                fetch_hubdrive_url = _get_proxied_url(hubdrive_url)
+                r2 = _session.get(fetch_hubdrive_url, timeout=30, allow_redirects=True)
                 r2.raise_for_status()
                 soup2 = BeautifulSoup(r2.text, "html.parser")
                 
