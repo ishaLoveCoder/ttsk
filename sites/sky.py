@@ -10,12 +10,13 @@ from bot import load_config, clean_title, HEADERS
 
 _BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
 
-
-def get_sky_posts():
+def get_sky_posts(url=None):
     cfg = load_config()
-    HEADERS["Referer"] = cfg["sky_domain"]
+    if not url:
+        url = cfg.get("sky_domain", "https://skymovieshd.free/")
+    HEADERS["Referer"] = url
     try:
-        r = requests.get(cfg["sky_domain"], headers=HEADERS, timeout=20)
+        r = requests.get(url, headers=HEADERS, timeout=20)
         soup = BeautifulSoup(r.text, "lxml")
         posts = []
         seen_urls = set()
@@ -23,11 +24,10 @@ def get_sky_posts():
             href  = a.get("href", "").strip()
             title = a.get_text(" ", strip=True)
             if not href or not title: continue
-            # UNRATED filter — URL ya title mein ho toh skip
             if _BLOCKED.search(href) or _BLOCKED.search(title):
                 print(f"[SKY] Skipping UNRATED: {href}")
                 continue
-            full_url = urljoin(cfg["sky_domain"], href)
+            full_url = urljoin(url, href)
             if full_url not in seen_urls:
                 seen_urls.add(full_url)
                 posts.append({"title": title, "url": full_url})
@@ -36,13 +36,11 @@ def get_sky_posts():
         print("SKY POSTS ERROR:", e)
         return []
 
-
 def _sky_title_from_html(html):
     m = re.search(r"<div class='Robiul'>\s*Download\s*(.*?)</div>", html, re.S | re.I)
     if m: return BeautifulSoup(m.group(1), "lxml").get_text(" ", strip=True)
     m2 = re.search(r"<title>\s*(.*?)\s*(?:Full Movie Download|Download)", html, re.I)
     return m2.group(1).strip() if m2 else "Unknown Movie"
-
 
 def _sky_protected_html(html, movie_url):
     gd = re.search(r'<a href=[\'"]([^\'"]+)[\'"]>\s*Google Drive Direct Links\s*</a>', html, re.I)
@@ -58,7 +56,6 @@ def _sky_protected_html(html, movie_url):
         print("SKY PROTECTED ERROR:", e)
         return None, None
 
-
 def extract_gofile_link(movie_url):
     if _BLOCKED.search(movie_url): return None
     cfg = load_config(); HEADERS["Referer"] = cfg["sky_domain"]
@@ -72,7 +69,6 @@ def extract_gofile_link(movie_url):
         return {"title": clean_title(raw_title, "sky"), "link": m[0].strip()} if m else None
     except Exception as e:
         print("SKY GOFILE ERROR:", e); return None
-
 
 def extract_gdflix_sky_link(movie_url):
     if _BLOCKED.search(movie_url): return None
@@ -90,7 +86,6 @@ def extract_gdflix_sky_link(movie_url):
     except Exception as e:
         print("SKY GDFLIX ERROR:", e); return None
 
-
 def extract_hubcloud_sky_link(movie_url):
     if _BLOCKED.search(movie_url): return None
     cfg = load_config(); HEADERS["Referer"] = cfg["sky_domain"]
@@ -107,7 +102,6 @@ def extract_hubcloud_sky_link(movie_url):
         return None
     except Exception as e:
         print("SKY HUBCLOUD ERROR:", e); return None
-
 
 def extract_sky_link(movie_url):
     ext = load_config().get("sky_extractor", "gofile").lower()
