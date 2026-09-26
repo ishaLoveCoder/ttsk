@@ -8,11 +8,10 @@ from bs4 import BeautifulSoup
 
 from bot import load_config, clean_title, fetch_title_via_jina, HEADERS
 
-def get_hdm_posts(url=None):
+
+def get_hdm_posts():
     cfg = load_config()
-    if not url:
-        url = cfg.get("hdm_rss", "https://hdmovie2.org.uk/movies/feed/")
-    feed = feedparser.parse(url)
+    feed = feedparser.parse(cfg["hdm_rss"])
     return [{"title": item.title, "url": item.link} for item in feed.entries]
 
 def get_hdm_links(movie_url):
