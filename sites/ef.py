@@ -8,9 +8,7 @@ from bs4 import BeautifulSoup
 from bot import load_config, clean_title
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-_BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
+_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
 
 
 def _cf_get(url, timeout=30):
@@ -28,6 +26,8 @@ def _cf_get(url, timeout=30):
     r = _session.get(url, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
     return r
+
+_BLOCKED = re.compile(r'\bUNRATED\b|\b18\+\b', re.I)
 
 
 def _clean_ef_filename(name):
@@ -52,7 +52,7 @@ def get_ef_posts():
     url = cfg.get("ef_url", "https://e3.extraflix.mobi/")
 
     try:
-        r = _cf_get(url)  # CF Worker
+        r = _cf_get(url)
 
         soup = BeautifulSoup(
             r.text,
@@ -109,7 +109,7 @@ def get_ef_posts():
 
 def get_ef_linkshub_links(movie_url):
     try:
-        r = _cf_get(movie_url)  # CF Worker
+        r = _cf_get(movie_url)
 
         links = re.findall(
             r'https://links\.linkshub\.fun/view/[A-Za-z0-9]+',
@@ -216,6 +216,10 @@ def get_ef_hubcloud(linkshub_url):
 
         # =================================================
         # HUBDRIVE
+        # Supports:
+        #   hubdrive.pics
+        #   hubdrive.tips
+        #   other hubdrive.* domains
         # =================================================
 
         hubdrive_links = [
@@ -243,18 +247,26 @@ def get_ef_hubcloud(linkshub_url):
         hubcloud_url = None
 
         # =================================================
-        # HUBDRIVE → HUBCLOUD (CF Worker se)
+        # HUBDRIVE → HUBCLOUD
+        #
+        # IMPORTANT:
+        # Sirf HubDrive open hoga.
+        # DriveHub ko open karke HubCloud search nahi hoga.
         # =================================================
 
         if hubdrive_url:
 
             try:
-                r2 = _cf_get(hubdrive_url)  # CF Worker
+                r2 = _cf_get(hubdrive_url)
 
                 soup2 = BeautifulSoup(
                     r2.text,
                     "html.parser"
                 )
+
+                # -----------------------------------------
+                # First: <a href="">
+                # -----------------------------------------
 
                 hubcloud_links = []
 
@@ -276,7 +288,12 @@ def get_ef_hubcloud(linkshub_url):
                             href
                         )
 
+                # -----------------------------------------
+                # Fallback: raw HTML
+                # -----------------------------------------
+
                 if not hubcloud_links:
+
                     hubcloud_links = re.findall(
                         r'https?://hubcloud\.[^"\'<>\s]+',
                         r2.text,
@@ -304,6 +321,13 @@ def get_ef_hubcloud(linkshub_url):
         # RETURN
         # =================================================
 
+        # Existing repo compatibility:
+        # "link" = final HubCloud when available.
+        #
+        # Additional fields:
+        # drivehub / hubdrive / hubcloud
+        #
+
         if not (
             drivehub_url
             or hubdrive_url
@@ -311,12 +335,19 @@ def get_ef_hubcloud(linkshub_url):
         ):
             return None
 
+        # Priority: hubcloud → drivehub → hubdrive
+        final_link = hubcloud_url or drivehub_url or hubdrive_url
+
         return {
             "title": clean_title(
                 filename,
                 "ef"
             ),
-            "link": hubcloud_url,
+
+            # final_link = jo bhi pehle mile
+            "link": final_link,
+
+            # Individual fields
             "drivehub": drivehub_url,
             "hubdrive": hubdrive_url,
             "hubcloud": hubcloud_url
@@ -335,6 +366,8 @@ def get_ef_final_links(
     post_title,
     extractor="hubcloud"
 ):
+    # UNRATED check on movie URL too
+
     if (
         _BLOCKED.search(movie_url)
         or _BLOCKED.search(post_title)
