@@ -33,15 +33,16 @@ def default_config():
         "hdm_rss": "https://hdmovie2.org.uk/movies/feed/",
         "ef_url": "https://e4.extraflix.mobi/",
         "ff_url": "https://filmyfly.builders/",
-        "cf_worker_url": "", # Yahan CF Worker URL daalna command se
         "interval": 900,
         "tag_username": "@username",
         "tag_id": 123456789,
+        # channels per-source + common
         "channels": [],
         "sky_channels": [],
         "hdm_channels": [],
         "ef_channels": [],
         "ff_channels": [],
+        # per-chat overrides: {"chat_id": {"cmd": "/l2", "extractor": "gofile", ...}}
         "chat_overrides": {},
         "sky_enabled": True, "hdm_enabled": True,
         "ef_enabled": True, "ff_enabled": True,
@@ -50,7 +51,9 @@ def default_config():
         "ff_extractor": "all",
         "ff_size_limit_mb": 4096,
         "complete_word": "Complete",
+        "cf_worker_url": "",  # Cloudflare Worker URL for EF/FF IP bypass  # change via /setcompleteword
         "sky_cmd": "/l3", "hdm_cmd": "/l3", "ef_cmd": "/l3", "ff_cmd": "/l3",
+        # captions
         "sky_movie_caption":  "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
         "sky_series_caption": "{title} ({year}) {season} {episode} {complete} {quality} {language} {source} {codec} {esub}.mkv",
         "hdm_movie_caption":  "{title} ({year}) {quality} {language} {source} {codec} {esub}.mkv",
@@ -66,6 +69,7 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2)
 
 def get_chat_override(cfg, chat_id, key, default):
+    """Per-chat override agar set hai to woh, warna global"""
     overrides = cfg.get("chat_overrides", {})
     return overrides.get(str(chat_id), {}).get(key, default)
 
@@ -148,7 +152,7 @@ def parse_title(raw):
         p['episode'] = ''
     _cw = load_config().get("complete_word", "Complete")
     p['complete'] = _cw if re.search(r'\bcomplete\b', raw, re.I) else ''
-    p['combine'] = _cw
+    p['combine'] = _cw  # alias: {combine} works same as {complete}
     p['esub'] = 'Esub'
     if y:
         title_part = raw[:y.start()].strip().rstrip('.-\u2013 ')
@@ -172,9 +176,9 @@ def apply_caption(parts, fmt):
     result = fmt
     for k, v in parts.items():
         result = result.replace('{' + k + '}', v)
-    result = re.sub(r'\(\s*\)', '', result)
-    result = re.sub(r'\(\s+', '(', result)
-    result = re.sub(r'\s+\)', ')', result)
+    result = re.sub(r'\(\s*\)', '', result)       # empty ()
+    result = re.sub(r'\(\s+', '(', result)          # "( 2025" → "(2025"
+    result = re.sub(r'\s+\)', ')', result)           # "2025 )" → "2025)"
     result = re.sub(r'\s{2,}', ' ', result).strip()
     result = re.sub(r'\s+\.mkv$', '.mkv', result)
     return result
@@ -221,58 +225,21 @@ def fetch_title_via_jina(gdflix_url, retries=2, timeout=30):
             break
     return None
 
-# ================= SEND (per-chat aware) =================
-def get_all_urls_for_source(source):
-    cfg = load_config()
-    urls = set()
-    if source == "sky":
-        urls.add(cfg.get("sky_domain", ""))
-        key = "sky_domain"
-    elif source == "hdm":
-        urls.add(cfg.get("hdm_rss", ""))
-        key = "hdm_rss"
-    elif source == "ef":
-        urls.add(cfg.get("ef_url", ""))
-        key = "ef_url"
-    elif source == "ff":
-        urls.add(cfg.get("ff_url", ""))
-        key = "ff_url"
-    else:
-        return []
-        
-    for chat_id, overrides in cfg.get("chat_overrides", {}).items():
-        url = overrides.get(key)
-        if url:
-            urls.add(url)
-            
-    return list(filter(None, urls))
+# ================= SITES (Sky / HDM / EF / FF) =================
+# Har site ka pura code ab sites/ folder mein hai (sky.py, hdm.py, ef.py, ff.py).
+# Yahan se import niche hai (functions define hone ke baad) taaki sites/*.py
+# files 'from bot import ...' kar sakein bina circular-import error ke.
 
-def send_to_telegram(data, source="sky", source_url=None):
+# ================= SEND (per-chat aware) =================
+def send_to_telegram(data, source="sky"):
     cfg = load_config()
 
     source_channels = cfg.get(f"{source}_channels", [])
     common_channels = cfg.get("channels", [])
-    all_channels = list(set(source_channels + common_channels))
-    
-    if not all_channels:
-        all_channels = [int(os.getenv("POST_CHAT_ID", "0"))]
-        
-    if source == "sky": global_url = cfg.get("sky_domain", "")
-    elif source == "hdm": global_url = cfg.get("hdm_rss", "")
-    elif source == "ef": global_url = cfg.get("ef_url", "")
-    elif source == "ff": global_url = cfg.get("ff_url", "")
-    else: global_url = ""
-        
-    target_channels = []
-    for chat_id in all_channels:
-        if source_url:
-            chat_override_url = get_chat_override(cfg, chat_id, f"{source}_domain" if source=="sky" else f"{source}_url" if source!="hdm" else f"{source}_rss", global_url)
-            if chat_override_url == source_url:
-                target_channels.append(chat_id)
-        else:
-            target_channels.append(chat_id)
+    targets = source_channels or common_channels or [int(os.getenv("POST_CHAT_ID", "0"))]
 
-    for chat_id in target_channels:
+    for chat_id in targets:
+        # Per-chat overrides (fallback to global)
         cmd      = get_chat_override(cfg, chat_id, f"{source}_cmd",      cfg.get(f"{source}_cmd", "/l3"))
         tag_user = get_chat_override(cfg, chat_id, "tag_username",        cfg.get("tag_username", "@username"))
         tag_id   = get_chat_override(cfg, chat_id, "tag_id",              cfg.get("tag_id", 0))
@@ -286,6 +253,10 @@ def send_to_telegram(data, source="sky", source_url=None):
     increment_stat(source)
 
 # ================= SITE IMPORTS =================
+# Sky/HDM/EF/FF ka pura code sites/ folder mein hai. Import yahan, end mein,
+# kyunki sites/*.py modules upar wale 'from bot import ...' karte hain — by
+# is point tak load_config, clean_title, fetch_title_via_jina, HEADERS,
+# send_to_telegram sab define ho chuke hain (no circular import issue).
 from sites.sky import (
     get_sky_posts, extract_sky_link,
     extract_gofile_link, extract_gdflix_sky_link, extract_hubcloud_sky_link,
@@ -305,16 +276,16 @@ HELP_PAGES = [
         "/hdm on|off\n"
         "/ef on|off\n"
         "/ff on|off\n\n"
-        "DOMAIN (Global):\n"
+        "DOMAIN:\n"
         "/setsky URL\n"
         "/sethdm RSS_URL\n"
         "/setef URL\n"
         "/setff URL\n\n"
-        "PROXY (CF Worker):\n"
-        "/setcfworker https://proxy.xxx.workers.dev\n"
-        "(Bypasses 403 Forbidden on Render)\n\n"
         "INTERVAL:\n"
-        "/settime 900"
+        "/settime 900\n\n"
+        "CF WORKER (EF/FF IP fix):\n"
+        "/setcfworker https://your.workers.dev\n"
+        "/setcfworker off"
     ),
     (
         "RSS Bot (2/4) — Channels & Tags\n\n"
@@ -342,9 +313,11 @@ HELP_PAGES = [
         "/setffcmd /l3\n\n"
         "CMD PREFIX (per-chat):\n"
         "/setskycmd /l2 -chatid -100xxx\n"
-        "(same for hdm, ef, ff)\n\n"
+        "/sethdmcmd /l2 -chatid -100xxx\n"
+        "(same for ef, ff)\n\n"
         "EXTRACTOR (global or per-chat):\n"
         "/setextractor gofile|gdflix|hubcloud\n"
+        "/setextractor hubcloud -chatid -100xxx\n"
         "/setefextractor hubcloud|all\n"
         "/setffextractor gofile|hubcloud|...\n\n"
         "FF SIZE:\n"
@@ -358,12 +331,19 @@ HELP_PAGES = [
         "/sethdmmovie FORMAT  /sethdmseries FORMAT\n"
         "/setefmovie  FORMAT  /setefseries  FORMAT\n"
         "/setffmovie  FORMAT  /setffseries  FORMAT\n\n"
+        "SET FORMAT (per-channel):\n"
+        "/setskymovie FORMAT -chatid -100xxx\n"
+        "(same for all others)\n\n"
         "Placeholders:\n"
         "{title} {year} {quality} {language}\n"
         "{source} {codec} {season} {episode}\n"
         "{complete}/{combine} {esub}\n\n"
         "/setcompleteword Combine\n"
-        "/replace -skyseries {complete} {combine}\n\n"
+        "(change 'Complete' to any word)\n\n"
+        "/replace -skyseries {complete} {combine}\n"
+        "(placeholder rename in saved format)\n\n"
+        "/showcaption | /resetcaption\n"
+        "/testcaption <title>\n\n"
         "INFO:\n"
         "/settings | /status | /stats\n"
         "/latestsky|hdm|ef|ff"
@@ -441,47 +421,37 @@ def cmd_ff(message):
         threading.Thread(target=run_ff_check, args=(message.chat.id,), daemon=True).start()
     else: _toggle(message, "ff_enabled", "FilmyFly")
 
-# --- URL Setters ---
-def _parse_chatid_flag(parts):
-    if "-chatid" in parts:
-        idx = parts.index("-chatid")
-        if idx + 1 < len(parts):
-            return parts[:idx], int(parts[idx+1])
-    return parts, None
-
-def _set_url(m, source):
+@bot.message_handler(commands=["setsky"])
+def cmd_setsky(m):
     if not is_admin(m): return
     p = m.text.strip().split(maxsplit=1)
     if len(p) < 2: return
-    args, chat_id = _parse_chatid_flag(p[1].split())
-    url = " ".join(args).strip()
-    cfg = load_config()
-    key = f"{source}_domain" if source == "sky" else f"{source}_url" if source != "hdm" else f"{source}_rss"
-    if chat_id:
-        set_chat_override(cfg, chat_id, key, url); save_config(cfg)
-        bot.reply_to(m, f"{source.upper()} URL for {chat_id}: {url}")
-    else:
-        cfg[key] = url; save_config(cfg)
-        bot.reply_to(m, f"{source.upper()} URL (global): {url}")
+    cfg = load_config(); cfg["sky_domain"] = p[1].strip(); save_config(cfg)
+    bot.reply_to(m, f"Sky: {p[1].strip()}")
 
-@bot.message_handler(commands=["setsky"])
-def cmd_setsky(m): _set_url(m, "sky")
 @bot.message_handler(commands=["sethdm"])
-def cmd_sethdm(m): _set_url(m, "hdm")
-@bot.message_handler(commands=["setef"])
-def cmd_setef(m): _set_url(m, "ef")
-@bot.message_handler(commands=["setff"])
-def cmd_setff(m): _set_url(m, "ff")
-
-@bot.message_handler(commands=["setcfworker"])
-def cmd_setcfworker(m):
+def cmd_sethdm(m):
     if not is_admin(m): return
     p = m.text.strip().split(maxsplit=1)
-    if len(p) < 2: bot.reply_to(m, "Usage: /setcfworker https://your-worker.workers.dev"); return
-    cfg = load_config()
-    cfg["cf_worker_url"] = p[1].strip()
-    save_config(cfg)
-    bot.reply_to(m, f"CF Worker URL set! ExtraFlix/FilmyFly will use this to bypass 403.")
+    if len(p) < 2: return
+    cfg = load_config(); cfg["hdm_rss"] = p[1].strip(); save_config(cfg)
+    bot.reply_to(m, f"HDM RSS: {p[1].strip()}")
+
+@bot.message_handler(commands=["setef"])
+def cmd_setef(m):
+    if not is_admin(m): return
+    p = m.text.strip().split(maxsplit=1)
+    if len(p) < 2: return
+    cfg = load_config(); cfg["ef_url"] = p[1].strip(); save_config(cfg)
+    bot.reply_to(m, f"EF URL: {p[1].strip()}")
+
+@bot.message_handler(commands=["setff"])
+def cmd_setff(m):
+    if not is_admin(m): return
+    p = m.text.strip().split(maxsplit=1)
+    if len(p) < 2: return
+    cfg = load_config(); cfg["ff_url"] = p[1].strip(); save_config(cfg)
+    bot.reply_to(m, f"FF URL: {p[1].strip()}")
 
 @bot.message_handler(commands=["settime"])
 def cmd_settime(m):
@@ -492,6 +462,14 @@ def cmd_settime(m):
     bot.reply_to(m, f"Interval: {p[1]}s")
 
 # --- Channel helpers ---
+def _parse_chatid_flag(parts):
+    """Return (main_args, chat_id_or_None)"""
+    if "-chatid" in parts:
+        idx = parts.index("-chatid")
+        if idx + 1 < len(parts):
+            return parts[:idx], int(parts[idx+1])
+    return parts, None
+
 def _add_channel(m, key, name):
     if not is_admin(m): return
     p = m.text.strip().split()
@@ -586,6 +564,7 @@ def cmd_settagid(m):
         cfg["tag_id"] = int(p[1]); save_config(cfg)
         bot.reply_to(m, f"Tag ID (global): {p[1]}")
 
+# --- CMD per-chat support ---
 def _set_cmd(m, source):
     if not is_admin(m): return
     p = m.text.strip().split()
@@ -610,6 +589,7 @@ def cmd_setefcmd(m): _set_cmd(m, "ef")
 @bot.message_handler(commands=["setffcmd"])
 def cmd_setffcmd(m): _set_cmd(m, "ff")
 
+# --- Extractors ---
 def _set_extractor(m, cfg_key, valid, name):
     if not is_admin(m): return
     p = m.text.strip().split()
@@ -651,6 +631,7 @@ SAMPLE_SERIES = {"title":"Show","year":"2026","quality":"1080p","language":"Hind
 def _set_cap(m, key, sample):
     if not is_admin(m): return
     text = m.text.strip()
+    # -chatid flag support: /setskymovie FORMAT -chatid -100xxx
     chat_id = None
     ci_match = re.search(r'-chatid\s+(-?\d+)', text)
     if ci_match:
@@ -727,6 +708,8 @@ def cmd_testcaption(m):
         f"FF:   {apply_caption(parts, get_fmt('ff', parts))}"
     ))
 
+
+# ================= /replace command =================
 _REPLACE_KEY_MAP = {
     "-skymovie":  "sky_movie_caption",
     "-skyseries": "sky_series_caption",
@@ -741,6 +724,8 @@ _REPLACE_KEY_MAP = {
 @bot.message_handler(commands=["replace"])
 def cmd_replace(m):
     if not is_admin(m): return
+    # Usage: /replace -skyseries {complete} {combine}
+    # or:   /replace -skyseries {complete} {combine} -chatid -100xxx
     p = m.text.strip().split()
     usage = (
         "Usage: /replace -<target> {old} {new}\n"
@@ -761,6 +746,7 @@ def cmd_replace(m):
     old_word = p[2]
     new_word = p[3]
 
+    # -chatid support
     chat_id = None
     if "-chatid" in p:
         idx = p.index("-chatid")
@@ -772,6 +758,7 @@ def cmd_replace(m):
     cfg = load_config()
 
     if chat_id:
+        # per-channel: get current override or global
         current = get_chat_override(cfg, chat_id, cfg_key, cfg.get(cfg_key, ""))
         updated = current.replace(old_word, new_word)
         if updated == current:
@@ -787,6 +774,22 @@ def cmd_replace(m):
         cfg[cfg_key] = updated
         save_config(cfg)
         bot.reply_to(m, f"Done (global)!\n\nBefore:\n{current}\n\nAfter:\n{updated}")
+
+@bot.message_handler(commands=["setcfworker"])
+def cmd_setcfworker(m):
+    if not is_admin(m): return
+    p = m.text.strip().split(maxsplit=1)
+    if len(p) < 2:
+        bot.reply_to(m, "Usage: /setcfworker https://your-worker.workers.dev\n/setcfworker off  (disable)")
+        return
+    cfg = load_config()
+    val = "" if p[1].strip().lower() == "off" else p[1].strip()
+    cfg["cf_worker_url"] = val
+    save_config(cfg)
+    if val:
+        bot.reply_to(m, f"CF Worker set:\n{val}\n\nEF + FF ab is worker se fetch karenge.")
+    else:
+        bot.reply_to(m, "CF Worker disabled. Direct fetch hoga.")
 
 @bot.message_handler(commands=["setcompleteword"])
 def cmd_setcompleteword(m):
@@ -806,7 +809,6 @@ def cmd_settings(m):
         f"HDM: {cfg['hdm_rss']} ({'ON' if cfg['hdm_enabled'] else 'OFF'})\n"
         f"EF:  {cfg.get('ef_url')} ({'ON' if cfg.get('ef_enabled') else 'OFF'})\n"
         f"FF:  {cfg.get('ff_url')} ({'ON' if cfg.get('ff_enabled') else 'OFF'})\n\n"
-        f"CF Proxy: {cfg.get('cf_worker_url', 'Not Set')}\n\n"
         f"Interval: {cfg['interval']}s\n"
         f"Tag: {cfg['tag_username']} {cfg['tag_id']}\n"
         f"Sky ext: {cfg.get('sky_extractor','gofile')}\n"
@@ -814,7 +816,8 @@ def cmd_settings(m):
         f"FF ext:  {cfg.get('ff_extractor','all')}\n"
         f"FF limit:{cfg.get('ff_size_limit_mb',4096)}MB\n"
         f"CMDs: sky={cfg.get('sky_cmd','/l3')} hdm={cfg.get('hdm_cmd','/l3')} "
-        f"ef={cfg.get('ef_cmd','/l3')} ff={cfg.get('ff_cmd','/l3')}"
+        f"ef={cfg.get('ef_cmd','/l3')} ff={cfg.get('ff_cmd','/l3')}\n"
+        f"CF Worker: {cfg.get('cf_worker_url','Not set')}"
     ))
 
 @bot.message_handler(commands=["status"])
@@ -887,12 +890,11 @@ def cmd_latestff(m):
 def run_sky_check(notify=None):
     seen = load_seen(); count = 0
     try:
-        for url in get_all_urls_for_source("sky"):
-            for post in reversed(get_sky_posts(url)):
-                if post["url"] in seen: continue
-                data = extract_sky_link(post["url"])
-                if data: send_to_telegram(data, "sky", url); count += 1
-                seen.add(post["url"]); save_seen(seen); time.sleep(2)
+        for post in reversed(get_sky_posts()):
+            if post["url"] in seen: continue
+            data = extract_sky_link(post["url"])
+            if data: send_to_telegram(data, "sky"); count += 1
+            seen.add(post["url"]); save_seen(seen); time.sleep(2)
         if notify: bot.send_message(notify, f"Sky done. {count} sent.")
     except Exception as e:
         if notify: bot.send_message(notify, f"Sky error: {e}")
@@ -900,15 +902,14 @@ def run_sky_check(notify=None):
 def run_hdm_check(notify=None):
     seen = load_seen(); count = 0
     try:
-        for url in get_all_urls_for_source("hdm"):
-            for post in reversed(get_hdm_posts(url)):
-                if post["url"] in seen: continue
-                links = get_hdm_links(post["url"])
-                files = []
-                for item in links: files.extend(extract_gdflix_data(item["url"]))
-                unique = list({x["link"]: x for x in files}.values())
-                for f in unique: send_to_telegram(f, "hdm", url); count += 1; time.sleep(2)
-                seen.add(post["url"]); save_seen(seen)
+        for post in reversed(get_hdm_posts()):
+            if post["url"] in seen: continue
+            links = get_hdm_links(post["url"])
+            files = []
+            for item in links: files.extend(extract_gdflix_data(item["url"]))
+            unique = list({x["link"]: x for x in files}.values())
+            for f in unique: send_to_telegram(f, "hdm"); count += 1; time.sleep(2)
+            seen.add(post["url"]); save_seen(seen)
         if notify: bot.send_message(notify, f"HDM done. {count} sent.")
     except Exception as e:
         if notify: bot.send_message(notify, f"HDM error: {e}")
@@ -918,12 +919,11 @@ def run_ef_check(notify=None):
     cfg = load_config()
     extractor = cfg.get("ef_extractor", "hubcloud")
     try:
-        for url in get_all_urls_for_source("ef"):
-            for post in reversed(get_ef_posts(url)):
-                if post["url"] in seen: continue
-                files = get_ef_final_links(post["url"], post["title"], extractor)
-                for f in files: send_to_telegram(f, "ef", url); count += 1; time.sleep(2)
-                seen.add(post["url"]); save_seen(seen)
+        for post in reversed(get_ef_posts()):
+            if post["url"] in seen: continue
+            files = get_ef_final_links(post["url"], post["title"], extractor)
+            for f in files: send_to_telegram(f, "ef"); count += 1; time.sleep(2)
+            seen.add(post["url"]); save_seen(seen)
         if notify: bot.send_message(notify, f"EF done. {count} sent.")
     except Exception as e:
         if notify: bot.send_message(notify, f"EF error: {e}")
@@ -931,12 +931,11 @@ def run_ef_check(notify=None):
 def run_ff_check(notify=None):
     seen = load_seen(); count = 0
     try:
-        for url in get_all_urls_for_source("ff"):
-            for post in reversed(get_ff_posts(url)):
-                if post["url"] in seen: continue
-                files = get_ff_links(post["url"])
-                for f in files: send_to_telegram(f, "ff", url); count += 1; time.sleep(2)
-                seen.add(post["url"]); save_seen(seen)
+        for post in reversed(get_ff_posts()):
+            if post["url"] in seen: continue
+            files = get_ff_links(post["url"])
+            for f in files: send_to_telegram(f, "ff"); count += 1; time.sleep(2)
+            seen.add(post["url"]); save_seen(seen)
         if notify: bot.send_message(notify, f"FF done. {count} sent.")
     except Exception as e:
         if notify: bot.send_message(notify, f"FF error: {e}")
@@ -944,9 +943,7 @@ def run_ff_check(notify=None):
 # ================= MAIN =================
 def main():
     print("Bot Started...")
-    # skip_pending=True taaki purane pending messages drop ho jayein
-    # aur 409 conflict se bachne ke liye auto_reset_polling=True
-    threading.Thread(target=bot.infinity_polling, kwargs={'skip_pending': True, 'auto_reset_polling': True}, daemon=True).start()
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     seen = load_seen()
 
     while True:
@@ -955,43 +952,39 @@ def main():
         try:
             if cfg.get("sky_enabled", True):
                 last_check["sky"] = time.time()
-                for url in get_all_urls_for_source("sky"):
-                    for post in reversed(get_sky_posts(url)):
-                        if post["url"] in seen: continue
-                        data = extract_sky_link(post["url"])
-                        if data: send_to_telegram(data, "sky", url); print("[SKY]", data["title"])
-                        seen.add(post["url"]); save_seen(seen); time.sleep(3)
+                for post in reversed(get_sky_posts()):
+                    if post["url"] in seen: continue
+                    data = extract_sky_link(post["url"])
+                    if data: send_to_telegram(data, "sky"); print("[SKY]", data["title"])
+                    seen.add(post["url"]); save_seen(seen); time.sleep(3)
 
             if cfg.get("hdm_enabled", True):
                 last_check["hdm"] = time.time()
-                for url in get_all_urls_for_source("hdm"):
-                    for post in reversed(get_hdm_posts(url)):
-                        if post["url"] in seen: continue
-                        links = get_hdm_links(post["url"])
-                        files = []
-                        for item in links: files.extend(extract_gdflix_data(item["url"]))
-                        unique = list({x["link"]: x for x in files}.values())
-                        for f in unique: send_to_telegram(f, "hdm", url); print("[HDM]", f["title"]); time.sleep(2)
-                        seen.add(post["url"]); save_seen(seen)
+                for post in reversed(get_hdm_posts()):
+                    if post["url"] in seen: continue
+                    links = get_hdm_links(post["url"])
+                    files = []
+                    for item in links: files.extend(extract_gdflix_data(item["url"]))
+                    unique = list({x["link"]: x for x in files}.values())
+                    for f in unique: send_to_telegram(f, "hdm"); print("[HDM]", f["title"]); time.sleep(2)
+                    seen.add(post["url"]); save_seen(seen)
 
             if cfg.get("ef_enabled", True):
                 last_check["ef"] = time.time()
                 extractor = cfg.get("ef_extractor", "hubcloud")
-                for url in get_all_urls_for_source("ef"):
-                    for post in reversed(get_ef_posts(url)):
-                        if post["url"] in seen: continue
-                        files = get_ef_final_links(post["url"], post["title"], extractor)
-                        for f in files: send_to_telegram(f, "ef", url); print("[EF]", f["title"]); time.sleep(2)
-                        seen.add(post["url"]); save_seen(seen)
+                for post in reversed(get_ef_posts()):
+                    if post["url"] in seen: continue
+                    files = get_ef_final_links(post["url"], post["title"], extractor)
+                    for f in files: send_to_telegram(f, "ef"); print("[EF]", f["title"]); time.sleep(2)
+                    seen.add(post["url"]); save_seen(seen)
 
             if cfg.get("ff_enabled", True):
                 last_check["ff"] = time.time()
-                for url in get_all_urls_for_source("ff"):
-                    for post in reversed(get_ff_posts(url)):
-                        if post["url"] in seen: continue
-                        files = get_ff_links(post["url"])
-                        for f in files: send_to_telegram(f, "ff", url); print("[FF]", f["title"]); time.sleep(2)
-                        seen.add(post["url"]); save_seen(seen)
+                for post in reversed(get_ff_posts()):
+                    if post["url"] in seen: continue
+                    files = get_ff_links(post["url"])
+                    for f in files: send_to_telegram(f, "ff"); print("[FF]", f["title"]); time.sleep(2)
+                    seen.add(post["url"]); save_seen(seen)
 
         except Exception as e:
             print("MAIN ERROR:", e)
